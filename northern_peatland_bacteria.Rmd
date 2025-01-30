@@ -1385,7 +1385,7 @@ pairs <- GGally::ggpairs(imputed_data_lt,
                    GGally::ggally_barDiag(..., fill="grey")),
                  
                  # UPPER TRIANGLE ELEMENTS: use fct. creating corr heatmap with sign stars
-                 upper = list(continuous = cor_fun)) + 
+                 upper = list(continuous = fct_list$cor_fun)) + 
   theme(strip.background = element_blank(), # remove color
         strip.text = element_text(size=6,angle=45), # change font and font size
         axis.line = element_line(colour = "grey"),
@@ -1448,7 +1448,7 @@ rownames(pca_tmp$var$coord) <- names_df_clean$midname[match(rownames(pca_tmp$var
 
 coord_pca$site <- site_data$Sample
 coord_pca$koppen_clim <- site_data$koppen_clim
-mul <- arrowMul(as.data.frame(pca_tmp$var$coord),
+mul <- fct_list$arrowMul(as.data.frame(pca_tmp$var$coord),
                 pca_tmp$ind$coord,
                 pca_tmp$quanti.sup$coord)
 
@@ -1897,13 +1897,16 @@ We cant create a robust phylogenetic tree with only 16s DNA but it will be used 
 phy <- file2meco::meco2phyloseq(meco_16s)
 fasta <- paste0(paste0(">",rownames(phy@tax_table)),"\n",gsub("s__","",phy@tax_table[,2]))
 write(fasta,"processed_data/fasta4tree.fasta")
+```
 
+
+```{r}
 #generate trees
-mySequences <- Biostrings::readDNAStringSet("processed_data/fasta4tree.fasta")
-aligned <- msa::msa(mySequences,method = "ClustalW")
-aligned <- msaConvert(aligned,type="phangorn::phyDat")
-dist.aln<-dist.ml(aligned,model="JC69")
-treeUPGMA <- upgma(dist.aln)
+# mySequences <- Biostrings::readDNAStringSet("processed_data/fasta4tree.fasta")
+# aligned <- msa::msa(mySequences,method = "ClustalW")
+# aligned <- msaConvert(aligned,type="phangorn::phyDat")
+# dist.aln<-dist.ml(aligned,model="JC69")
+# treeUPGMA <- upgma(dist.aln)
 ```
 
 
