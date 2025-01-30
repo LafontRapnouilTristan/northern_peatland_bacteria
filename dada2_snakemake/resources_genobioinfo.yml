@@ -1,0 +1,28 @@
+__default__:
+  jobname: "default"
+  mem: "26G"
+  cpus: 10
+  time: "15:00:00"
+  partition: "workq"
+
+## runall ##
+runall:
+    jobname: "runall"
+    mem: "64G"
+    cpus: 30
+    time: "60:00:00"
+
+## taxassign ##
+taxassign:
+    jobname: "taxassign"
+    mem: "64G"
+    cpus: 30
+    time: "60:00:00"
+
+
+    ## filter ##
+filter:
+    jobname: "filter"
+    mem: "64G"
+    cpus: 30
+    time: "60:00:00"

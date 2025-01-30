@@ -1,0 +1,3325 @@
+---
+title: "R Notebook"
+output: html_document
+---
+
+# Intro
+
+The aim of this paper is to investigate microbial communities from northern Peatlands by mean of 16s Metabarcoding.
+This investigation is both Taxonomic and Functional.
+
+For about 200 hundred samples from the northern hemisphere we have:
+
+- *Communities info*:  
+    * Metabarcoding (16s - bacteria/archae)  
+    * Bacteria and photoautotrophs abundances (cytometry)  
+    * Enzyme activity (C, N and P cycles; 4 enzymes)  
+- *Site bioclimatic data*:  
+    * Coordinates  
+    * Google Earth Engine (GEE) data  
+    
+
+## Metabarcoding
+
+Raw sequencing output (ILLUMINA) were processed with a snakemake wrapper of dada2 pipeline.
+Hosted on this GitHub repo.
+
+# -----------------------------------
+# -----------------------------------
+# -----------------------------------
+
+# A -  Load Packages & custom function
+
+```{r}
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+library(microeco)
+library(patchwork)
+```
+
+```{r}
+fct_list <- NULL
+
+# A function for paired correlation plot
+fct_list$cor_fun <- function(data, mapping, method="pearson", use="pairwise", sz=5, ...){
+    # grab data
+    x <- GGally::eval_data_col(data, mapping$x)
+    y <- GGally::eval_data_col(data, mapping$y)
+    # calculate correlation: for significance stars
+    corr <- cor.test(x, y, method=method)
+    est <- corr$estimate
+    # get significance stars
+    stars <- c("***", "**", "*", "")[findInterval(corr$p.value, c(0, 0.001, 0.01, 0.05, 1))]
+    lbl <- stars
+    # calculate correlation: for colored tiles
+    corr <- cor(x, y, method=method, use=use)
+    
+    # calculate color based on correlation value
+    # corr = -1 => blue, 
+    # corr =  0 => white, 
+    # corr = +1 => red, 
+    colFn <- colorRampPalette(c("blue", "white", "red"), interpolate ='spline')
+    fill <- colFn(100)[findInterval(corr, seq(-1, 1, length=100))]
+    fill[which(stars=="")] <- "grey"
+    ggplot(data = data, mapping = mapping, ...) + 
+        theme_void() +
+        annotate("text",
+                 x=mean(x, na.rm=TRUE),
+                 y=mean(y, na.rm=TRUE),
+                 label=lbl,
+                 ...) +
+        theme(panel.background = element_rect(fill=fill,  # to fill background of panel with color
+                                              colour=NA), # to remove border of panel
+              panel.grid.major = element_blank())
+}
+
+# A funvtion to visualize number of optimal cluster
+fct_list$fviz_nbclust_fixed <- function (x, FUNcluster = NULL, method = c("silhouette", "wss", 
+    "gap_stat"), diss = NULL, k.max = 10, nboot = 100, verbose = interactive(), 
+    barfill = "steelblue", barcolor = "steelblue", linecolor = "steelblue", 
+    print.summary = TRUE, ...) 
+{
+    set.seed(123)
+    if (k.max < 2) 
+        stop("k.max must bet > = 2")
+    method = match.arg(method)
+    if (!inherits(x, c("data.frame", "matrix")) & !("Best.nc" %in% 
+        names(x))) 
+        stop("x should be an object of class matrix/data.frame or ", 
+            "an object created by the function NbClust() [NbClust package].")
+    if (inherits(x, "list") & "Best.nc" %in% names(x)) {
+        best_nc <- x$Best.nc
+        if (any(class(nb$Best.nc) == "numeric")) 
+            print(best_nc)
+        else if (any(class(nb$Best.nc) == "matrix")) 
+            .viz_NbClust(x, print.summary, barfill, barcolor)
+    }
+    else if (is.null(FUNcluster)) 
+        stop("The argument FUNcluster is required. ", "Possible values are kmeans, pam, hcut, clara, ...")
+    else if (!is.function(FUNcluster)) {
+        stop("The argument FUNcluster should be a function. ", 
+            "Check if you're not overriding the specified function name somewhere.")
+    }
+    else if (method %in% c("silhouette", "wss")) {
+        if (is.data.frame(x)) 
+            x <- as.matrix(x)
+        if (is.null(diss)) 
+            diss <- stats::dist(x)
+        v <- rep(0, k.max)
+        if (method == "silhouette") {
+            for (i in 2:k.max) {
+                clust <- FUNcluster(x, i, ...)
+                v[i] <- .get_ave_sil_width(diss, clust$cluster)
+            }
+        }
+        else if (method == "wss") {
+            for (i in 1:k.max) {
+                clust <- FUNcluster(x, i, ...)
+                v[i] <- .get_withinSS(diss, clust$cluster)
+            }
+        }
+        df <- data.frame(clusters = as.factor(1:k.max), y = v, 
+            stringsAsFactors = TRUE)
+        ylab <- "Total Within Sum of Square"
+        if (method == "silhouette") 
+            ylab <- "Average silhouette width"
+        p <- ggpubr::ggline(df, x = "clusters", y = "y", group = 1, 
+            color = linecolor, ylab = ylab, xlab = "Number of clusters k", 
+            main = "Optimal number of clusters")
+        if (method == "silhouette") 
+            p <- p + geom_vline(xintercept = which.max(v), linetype = 2, 
+                color = linecolor)
+        return(p)
+    }
+    else if (method == "gap_stat") {
+        extra_args <- list(...)
+        gap_stat <- cluster::clusGap(x, FUNcluster, K.max = k.max, 
+            B = nboot, verbose = verbose, ...)
+        if (!is.null(extra_args$maxSE)) 
+            maxSE <- extra_args$maxSE
+        else maxSE <- list(method = "firstSEmax", SE.factor = 1)
+        p <- fviz_gap_stat(gap_stat, linecolor = linecolor, 
+            maxSE = maxSE)
+        return(p)
+    }
+}
+
+
+# subsidary function
+fct_list$fviz_NbClust <- function(x, print.summary = TRUE,
+                         barfill = "steelblue", barcolor = "steelblue")
+  {
+     best_nc <- x$Best.nc
+    if(any(class(best_nc) == "numeric")) print(best_nc)
+     else if(any(class(best_nc) == "matrix")){
+    best_nc <- as.data.frame(t(best_nc), stringsAsFactors = TRUE)
+    best_nc$Number_clusters <- as.factor(best_nc$Number_clusters)
+    
+    # Summary
+    if(print.summary){
+      ss <- summary(best_nc$Number_clusters)
+      cat ("Among all indices: \n===================\n")
+      for(i in 1 :length(ss)){
+        cat("*", ss[i], "proposed ", names(ss)[i], "as the best number of clusters\n" )
+      }
+      cat("\nConclusion\n=========================\n")
+      cat("* According to the majority rule, the best number of clusters is ",
+          names(which.max(ss)),  ".\n\n")
+    }
+    df <- data.frame(Number_clusters = names(ss), freq = ss, stringsAsFactors = TRUE )
+    p <- ggpubr::ggbarplot(df,  x = "Number_clusters", y = "freq", fill = barfill, color = barcolor)+
+      labs(x = "Number of clusters k", y = "Frequency among all indices",
+           title = paste0("Optimal number of clusters - k = ", names(which.max(ss)) ))
+    
+    return(p)
+  }
+}
+
+# to aggregate taxonomy table
+fct_list$agg.table.taxo <- function(tab, tax.lvl="genus", tax.table) {
+  tax.table <- tax.table[match(rownames(tab),
+                               rownames(tax.table)),]
+  message(paste('Table aggregation to the', tax.lvl, "level."))
+  #message('Please be sure that the ASV/OTU table and the taxonomy table are ordered the same way')
+  if(nrow(tab) != nrow(tax.table)) stop("The ASV/OTU table and the taxonomy table do not have the same number of rows")
+  tax <- tax.table[,grep(tax.lvl, colnames(tax.table), ignore.case = T)]
+  tax[is.na(tax)] <- "Unknown"
+  tab <- aggregate(tab, by=list("taxo"=tax), FUN=sum)
+  rownames(tab) <- tab[,1]  
+  tab <- tab[,-1]
+  return(tab)
+}
+
+# function to get dot density to plot on scatterplots
+fct_list$get_density <- function(x, y, ...) {
+  dens <- MASS::kde2d(x, y, ...)
+  ix <- findInterval(x, dens$x)
+  iy <- findInterval(y, dens$y)
+  ii <- cbind(ix, iy)
+  return(dens$z[ii])
+}
+
+# a function to nudge labels on homemade multivariate plot
+fct_list$arrowMul <- function(arrows, data, at = c(0, 0), fill = 0.75) {
+  u <- c(range(data[,1], range(data[,2])))
+  u <- u - rep(at, each = 2)
+  r <- c(range(arrows[, 1], na.rm = TRUE), range(arrows[, 2], na.rm = TRUE))
+  rev <- sign(diff(u))[-2]
+  if (rev[1] < 0)
+    u[1:2] <- u[2:1]
+  if (rev[2] < 0)
+    u[3:4] <- u[4:3]
+  u <- u/r
+  u <- u[is.finite(u) & u > 0]
+  fill * min(u)
+}
+
+
+# MetacodeR tree edited
+fct_list$heat_tree.Taxmap <- function(.input, ...) {
+  # Non-standard argument evaluation
+  data <- .input$data_used(...)
+  data <- lapply(data,
+                 function(x) { # orders everthing the same
+                   if (is.null(names(x))) {
+                     return(x)
+                   } else {
+                     return(x[.input$edge_list$to])
+                   }
+                 })
+  arguments <- c(list(taxon_id = .input$edge_list$to, supertaxon_id = .input$edge_list$from),
+                 lazyeval::lazy_eval(lazyeval::lazy_dots(...), data = data))
+  
+  # Check for common mistakes
+  # func_not_vars <- c("taxon_name", "taxon_rank")
+  invalid_input <- vapply(arguments, is.function, logical(1))
+  if (any(invalid_input)) {
+    stop(paste0("Function given to parameter '", names(invalid_input)[invalid_input][1], "'",
+                " Did you use taxon_name/taxon_rank instead of taxon_names/taxon_ranks perhaps?"))
+  }
+  
+  # Use variable name for scale axis labels
+  if (! "node_color_axis_label" %in% names(arguments)) {
+    arguments$node_color_axis_label <- deparse(as.list(match.call())$node_color)
+  }
+  if (! "node_size_axis_label" %in% names(arguments)) {
+    arguments$node_size_axis_label <- deparse(as.list(match.call())$node_size)
+  }
+  if (! "edge_color_axis_label" %in% names(arguments)) {
+    arguments$edge_color_axis_label <- deparse(as.list(match.call())$edge_color)
+  }
+  if (! "edge_size_axis_label" %in% names(arguments)) {
+    arguments$edge_size_axis_label <- deparse(as.list(match.call())$edge_size)
+  }
+  
+  # Call heat_tree
+  do.call(heat_tree, arguments)
+}
+
+fct_list$heat_tree.default <- function(taxon_id, supertaxon_id, 
+                              node_label = NA,
+                              edge_label = NA,
+                              tree_label = NA,
+                              
+                              node_size = 1,
+                              edge_size = node_size,
+                              # tree_size = 1,
+                              
+                              node_label_size = node_size,
+                              edge_label_size = edge_size,
+                              tree_label_size = as.numeric(NA), 
+                              
+                              node_color = "#999999",
+                              edge_color = node_color,
+                              tree_color = NA,
+                              
+                              node_label_color = "#000000",
+                              node_label_alpha = 1, 
+                              node_label_box_fill = "#FFFFFF",
+                              node_label_box_color = NA,
+                              node_label_box_alpha = 1,
+                              edge_label_color = "#000000",
+                              tree_label_color = "#000000",
+                              
+                              node_size_trans = "area",
+                              edge_size_trans = node_size_trans,
+                              # tree_size_trans = "area",
+                              
+                              node_label_size_trans = node_size_trans,
+                              edge_label_size_trans = edge_size_trans,
+                              tree_label_size_trans = "area",
+                              
+                              node_color_trans = "area",
+                              edge_color_trans = node_color_trans,
+                              tree_color_trans = "area",
+                              
+                              node_label_color_trans = "area",
+                              edge_label_color_trans = "area",
+                              tree_label_color_trans = "area",
+                              
+                              node_size_range = c(NA, NA),
+                              edge_size_range = c(NA, NA),
+                              # tree_size_range = c(NA, NA),
+                              
+                              node_label_size_range = c(NA, NA),
+                              edge_label_size_range = c(NA, NA),
+                              tree_label_size_range = c(NA, NA),
+                              
+                              node_color_range = metacoder:::quantative_palette(),
+                              edge_color_range = node_color_range,
+                              tree_color_range = metacoder:::quantative_palette(),
+                              
+                              node_label_color_range = metacoder:::quantative_palette(),
+                              edge_label_color_range = metacoder:::quantative_palette(),
+                              tree_label_color_range = metacoder:::quantative_palette(),
+                              
+                              node_size_interval = range(node_size, na.rm = TRUE, finite = TRUE),
+                              node_color_interval = NULL,
+                              edge_size_interval = range(edge_size, na.rm = TRUE, finite = TRUE),
+                              edge_color_interval = NULL,
+                              
+                              node_label_max = 500,
+                              edge_label_max = 500,
+                              tree_label_max = 500,
+                              
+                              overlap_avoidance = 1,
+                              margin_size = c(0, 0, 0, 0),
+                              layout = "reingold-tilford",
+                              initial_layout = "fruchterman-reingold",
+                              make_node_legend = TRUE,
+                              make_edge_legend = TRUE,
+                              title = NULL,
+                              title_size = 0.08,
+                              
+                              node_legend_title = "Nodes",
+                              edge_legend_title = "Edges",
+                              
+                              node_color_axis_label = NULL, 
+                              node_size_axis_label = NULL,
+                              edge_color_axis_label = NULL, 
+                              edge_size_axis_label = NULL,
+                              
+                              node_color_digits = 3, 
+                              node_size_digits = 3,
+                              edge_color_digits = 3, 
+                              edge_size_digits = 3,
+                              
+                              background_color = "#FFFFFF00",
+                              output_file = NULL,
+                              
+                              aspect_ratio = 1,
+                              repel_labels = TRUE,
+                              repel_force = 1,
+                              repel_iter = 1000,
+                              
+                              verbose = FALSE,
+                              
+                              ...) {
+  #| ### Verify arguments =========================================================================
+  if (length(taxon_id) != length(supertaxon_id)) {
+    stop("'taxon_id' and 'supertaxon_id' must be of equal length.")
+  }
+  if (length(taxon_id) == 0) {
+    warning("'taxon_id' and 'supertaxon_id' are empty. Returning NULL.")
+    return(NULL)
+  }
+  if (length(unique(taxon_id)) != length(taxon_id)) {
+    stop("All values of 'taxon_id' are not unique.")
+  }
+  metacoder:::check_element_length(c("node_size", "edge_size",# "tree_size",
+                         "node_label_size", "edge_label_size",  "tree_label_size",
+                         "node_color", "edge_color", "tree_color",
+                         "node_label_color", "edge_label_color", "tree_label_color",
+                         "node_label", "edge_label", "tree_label"))
+  metacoder:::look_for_na(taxon_id, 
+              c("node_size", "edge_size",
+                "node_label_size", "edge_label_size",  "tree_label_size",
+                "node_color", "edge_color", "tree_color",
+                "node_label_color", "edge_label_color", "tree_label_color",
+                "node_label", "edge_label", "tree_label"))
+  metacoder:::verify_size(c("node_size", "edge_size", #"tree_size",
+                "node_label_size", "edge_label_size", "tree_label_size"))
+  metacoder:::verify_size_range(c("node_size_range",  "edge_size_range", # "tree_size_range",
+                      "node_label_size_range", "edge_label_size_range", "tree_label_size_range",
+                      "node_size_interval", "edge_size_interval"))
+  metacoder:::verify_trans(c("node_size_trans", "edge_size_trans", #"tree_size_trans",
+                 "node_color_trans", "edge_color_trans", "tree_color_trans",
+                 "node_label_size_trans", "edge_label_size_trans", "tree_label_size_trans", 
+                 "node_label_color_trans", "edge_label_color_trans", "tree_label_color_trans"))
+  metacoder:::verify_color_range(c("node_color_range", "edge_color_range", "tree_color_range",
+                       "node_label_color_range", "edge_label_color_range", "tree_label_color_range"))
+  metacoder:::verify_label_count(c("node_label_max", "edge_label_max", "tree_label_max"))
+  if (length(overlap_avoidance) == 0 || ! is.numeric(overlap_avoidance)) {
+    stop("Argument 'overlap_avoidance' must be a numeric of length 1.")
+  }
+  if (length(margin_size) != 4 || ! is.numeric(margin_size)) {
+    stop("Argument 'margin_size' must be a numeric of length 4: c(left, right, bottom, top)")
+  }
+  layout <- match.arg(layout, metacoder:::layout_functions())
+  if (!is.null(initial_layout)) {
+    initial_layout <- match.arg(initial_layout, metacoder:::layout_functions())
+  }
+  
+  #| ### Parse arguments
+  
+  if (is.null(node_color_interval)) {
+    if (! is.null(edge_color_interval) && all(node_color == edge_color)) {
+      node_color_interval <- edge_color_interval
+    } else if (length(metacoder:::get_numerics(node_color)) > 0) {
+      node_color_interval <- range(metacoder:::get_numerics(node_color),
+                                   na.rm = TRUE, finite = TRUE)
+    }
+  }
+  
+  if (is.null(edge_color_interval)) {
+    if (! is.null(node_color_interval) && all(node_color == edge_color)) {
+      edge_color_interval <- node_color_interval
+    } else if (length(metacoder:::get_numerics(edge_color)) > 0) {
+      edge_color_interval <- range(metacoder:::get_numerics(edge_color),
+                                   na.rm = TRUE, finite = TRUE)
+    }
+  }
+  
+  #| ### Standardize source data ==================================================================
+  data <- data.frame(stringsAsFactors = FALSE,
+                     tid_user = as.character(taxon_id),
+                     pid_user = as.character(supertaxon_id),
+                     
+                     vl_user = as.character(node_label),
+                     el_user = as.character(edge_label),
+                     tl_user = as.character(tree_label),
+                     
+                     vs_user = as.numeric(node_size),
+                     es_user = as.numeric(edge_size),
+                     # ts_user = as.numeric(tree_size),
+                     
+                     vls_user = as.numeric(node_label_size),
+                     els_user = as.numeric(edge_label_size),
+                     tls_user = as.numeric(tree_label_size),
+                     
+                     vc_user = node_color,
+                     ec_user = edge_color,
+                     tc_user = tree_color,
+                     
+                     vlc_user = node_label_color,
+                     elc_user = edge_label_color,
+                     tlc_user = tree_label_color)
+  row.names(data) <- data$tid_user
+  
+  #| #### Apply statistic transformations =========================================================
+  trans_key <- c(vs_user = node_size_trans, es_user = edge_size_trans, #ts_user = tree_size_trans,
+                 vls_user = node_label_size_trans, els_user = edge_label_size_trans,  tls_user = tree_label_size_trans,
+                 vc_user = node_color_trans, ec_user = edge_color_trans, tc_user = edge_color_trans,
+                 vlc_user = node_label_color_trans, elc_user = edge_label_color_trans, tlc_user = tree_label_color_trans)
+  transformed_names <- gsub(pattern = "_user$", x = names(trans_key), replacement = "_trans")
+  apply_trans <- function(col_name) {
+    if (is.numeric(data[ , col_name])) { 
+      metacoder:::transform_data(trans_key[col_name], data[ , col_name]) # if numbers are supplied
+    } else {
+      data[ , col_name] # if colors are defined explicitly, then no transformation is done
+    }
+  }
+  data[, transformed_names] <- lapply(names(trans_key), apply_trans)
+  # transform intervals
+  node_size_interval_trans <- metacoder:::transform_data(node_size_trans, node_size_interval)
+  edge_size_interval_trans <- metacoder:::transform_data(edge_size_trans, edge_size_interval)
+  node_color_interval_trans <- metacoder:::transform_data(node_color_trans, node_color_interval)
+  edge_color_interval_trans <- metacoder:::transform_data(edge_color_trans, edge_color_interval)
+  
+  
+  #| ### Make layout ==============================================================================
+  #| The layout is used to generate a list of coordinates to places graph verticies
+  #| First the edge list consituted by the `taxon_id` and `supertaxon_id` columns is used to construct 
+  #| an `igraph` graph object and then the layout is generated for that object. 
+  #|
+  #| #### Make a graph for each root in the graph -------------------------------------------------
+  metacoder:::my_print("Calculating layout for ", nrow(data), " taxa...", verbose = verbose)
+  get_sub_graphs <- function(taxa) {
+    if (length(taxa) == 1) {
+      # Make a graph with only a single node
+      adj_matrix <- matrix(c(0), ncol = 1, dimnames =  list(taxa, taxa))
+      sub_graph <- igraph::graph_from_adjacency_matrix(adj_matrix)
+    } else {
+      # Make edge list from taxon_id and supertaxon_id
+      edgelist <- as.matrix(data[taxa, c("pid_user", "tid_user")])
+      # Remove edges to taxa that dont exist in this subset of the dataset
+      edgelist <- edgelist[! is.na(edgelist[, "pid_user"]), , drop = FALSE]
+      #       # Randomly resort if layout is "reingold-tilford". NOTE: This is kinda hackish and should be replaced
+      #       if (layout == "reingold-tilford") { 
+      #         grouped_index <- split(rownames(edgelist), f = edgelist[, "pid_user"])
+      #         grouped_index <- unlist(grouped_index[sample(seq_along(grouped_index))])
+      #         edgelist <- edgelist[grouped_index, , drop = FALSE] 
+      #       }
+      sub_graph <- igraph::graph_from_edgelist(edgelist)
+    }
+    igraph::V(sub_graph)$weight_factor <- data[taxa, c("vs_trans")]
+    edge_end_node <- gsub("^[0-9]+\\|", "", attr(igraph::E(sub_graph), "vnames"))
+    igraph::E(sub_graph)$weight_factor <- data[edge_end_node, c("vs_trans")]
+    return(sub_graph)
+  }
+  data$is_root <- !(data$pid_user %in% data$tid_user)
+  data[data$is_root, "pid_user"] <- NA # Needed by split_by_level
+  sub_graph_taxa <- metacoder:::split_by_level(data$tid_user, data$pid_user, level =  1)
+  sub_graphs <- lapply(sub_graph_taxa, get_sub_graphs)
+  #|
+  #| #### Generate a layout for each graph --------------------------------------------------------
+  #|
+  get_sub_layouts <- function(graph, backup_layout = 'fruchterman-reingold') {
+    # Calculate an initial layout if specified
+    if (! is.null(initial_layout) && layout != initial_layout) {
+      intitial_coords <- metacoder:::layout_functions(initial_layout, graph)
+      if (! any(is.na(intitial_coords) | is.nan(unlist(intitial_coords)))) {
+        intitial_coords <- metacoder:::rescale(intitial_coords, to = ((nrow(intitial_coords) ^ 0.65) + 5) * c(-1, 1))
+        # intitial_coords <- rescale(intitial_coords, to = c(-100, 100))
+      }
+    } else {
+      intitial_coords <- NULL
+    }
+    # Calculate the primary layout 
+    coords <- metacoder:::layout_functions(layout, graph, intitial_coords = intitial_coords, ...)
+    # Calculate backup layout if primary one does not work
+    if (any(is.na(coords) | is.nan(unlist(coords)))) {
+      coords <- metacoder:::layout_functions(backup_layout, graph)
+      warning(paste0("Could not apply layout '", layout,
+                     "' to subgraph. Using 'fruchterman-reingold' instead."))
+    }
+    return(coords)
+}
+  
+  sub_coords <- lapply(sub_graphs, get_sub_layouts)
+  subgraph_key <- stats::setNames(rep(names(sub_graph_taxa), vapply(sub_graph_taxa, length, numeric(1))),
+                                  unlist(sub_graph_taxa))
+  data$subgraph_root <- subgraph_key[data$tid_user]
+  #|
+  #| #### Merge layout coordinates into an overall graph ------------------------------------------
+  #|
+  coords <- igraph::merge_coords(sub_graphs, sub_coords) # merge node coordinates for each tree
+  graph <- igraph::disjoint_union(sub_graphs) # merge graphs of each tree
+  row.names(coords) <- names(igraph::V(graph))
+  data$vx_plot <- coords[data$tid_user, 1]
+  data$vy_plot <- coords[data$tid_user, 2]
+  
+  # Rescale to constant size
+  my_range <- range(c(data$vx_plot, data$vy_plot))
+  to_scale <- c(0, 1)
+  data$vx_plot <- metacoder:::rescale(data$vx_plot, to = to_scale, from = my_range)
+  data$vy_plot <- metacoder:::rescale(data$vy_plot, to = to_scale, from = my_range)
+  
+  #| ### Set aspect ration
+  data$vx_plot <- data$vx_plot * aspect_ratio
+  
+  #| ### Core plot data ===========================================================================
+  #|
+  #| #### Optimize node size range --------------------------------------------------------------
+  #|
+  if (any(is.na(node_size_range))) {
+    metacoder:::my_print("Optmizing node size range...", verbose = verbose)
+    }
+  # Get range of potential node size ranges - - - - - - - - - - - - - - - - - - - - - - - - - - -
+  if (nrow(data) > 1) {
+    all_pairwise <- metacoder:::molten_dist(x = data$vx_plot, y = data$vy_plot) # get distance between all nodes
+    x_diff <- max(data$vx_plot) - min(data$vx_plot)
+    y_diff <- max(data$vy_plot) - min(data$vy_plot)
+    square_side_length <- sqrt(x_diff * y_diff)
+    if (is.na(node_size_range[1])) { # if minimum node size not set
+      min_range <- c(0, min(all_pairwise$distance))
+    } else {
+      min_range <- rep(node_size_range[1], 2) * square_side_length
+    }
+    if (is.na(node_size_range[2])) { # if maximum node size not set
+      max_range <- c(min_range[1], square_side_length / 5)
+    } else {
+      max_range <- c(node_size_range[2], 2) * square_side_length
+    }
+    if (! is.na(node_size_range[1]) && ! is.na(node_size_range[2])) {
+      vsr_plot <- node_size_range * square_side_length
+    } else {
+      # Subset pairwise pairs to increase speed - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+      max_important_pairs <- 1000 # Takes into account both size and distance
+      max_biggest_pairs <- 1000
+      max_closest_pairs <- 1000
+      if (nrow(all_pairwise) > sum(max_important_pairs, max_biggest_pairs, max_closest_pairs)) {
+        all_pairwise$size_sum <- data$vs_trans[all_pairwise$index_1] + data$vs_trans[all_pairwise$index_2]
+        all_pairwise$importance <- all_pairwise$size_sum / all_pairwise$distance
+        # all_pairwise <- all_pairwise[order(all_pairwise$importance, decreasing = TRUE), ]
+        pair_subset <- c(order(all_pairwise$importance, decreasing = TRUE)[1:max_important_pairs],
+                         order(all_pairwise$size_sum, decreasing = TRUE)[1:max_biggest_pairs],
+                         order(all_pairwise$distance)[1:max_closest_pairs])
+        all_pairwise <- all_pairwise[pair_subset, ]
+      }
+      find_overlap <- function(a_min, a_max, distance) {
+        scaled_vs <- metacoder:::rescale(data$vs_t, to = c(a_min, a_max), from = node_size_interval_trans)
+        names(scaled_vs) <- data$tid_user
+        gap <- distance$distance - scaled_vs[distance$index_1] - scaled_vs[distance$index_2]
+        overlap <- ifelse(gap < 0, abs(gap), 0)
+        overlap <- (overlap ^ 2) / (scaled_vs[distance$index_1] ^ 2 + scaled_vs[distance$index_2] ^ 2)
+        mean(overlap)
+      }
+      
+      # Choose base range based on optimality criteria  - - - - - - - - - - - - - - - - - - - - - - - -
+      optimality_stat <- function(minimum, maximum) {
+        if (minimum == 0) {
+          overlap <- 0
+        } else {
+          overlap <- find_overlap(minimum, maximum, all_pairwise)
+        }
+        ideal_min <- 0.02
+        ideal_max <- 0.3
+        ideal_range <- .1
+        minimum <- minimum / square_side_length
+        maximum <- maximum / square_side_length
+        min_size_score <- min(c(1, 1 - (ideal_min - minimum) / ideal_min))
+        max_size_score <- min(c(1, 1 - (maximum - ideal_max) / maximum))
+        range_prop <- minimum / maximum 
+        range_size_score <- min(c(1, 1 - abs(range_prop - ideal_range)))
+        overlap_score <- min(c(1, 1 - overlap ^ (0.08 / overlap_avoidance) )) # Totally observation based; might need to be rethought
+        result <- prod(c(min_size_score, max_size_score, range_size_score, overlap_score))
+        # print(c(min_size_score, max_size_score, range_size_score, overlap_score, result))
+        return(result)
+      }
+      
+      # Use genetic algorithm to pick range
+      ga_result <- GA::ga(type = "real-valued", 
+                          fitness =  function(x) optimality_stat(x[1], x[2]),
+                          lower = c(min_range[1], max_range[1]), upper = c(min_range[2], max_range[2]),
+                          maxiter = 40, run = 30, popSize = 70, monitor = FALSE, parallel = FALSE)
+      vsr_plot <- as.vector(ga_result@solution[1, ])
+    }
+  } else {
+    square_side_length = 1
+    vsr_plot <- rep(square_side_length / 4, 2)
+  }
+  data$vs_plot <- metacoder:::rescale(data$vs_t, to = vsr_plot, from = node_size_interval_trans)
+  #|
+  #| #### Infer edge size range -------------------------------------------------------------------
+  #|
+  infer_size_range <- function(specified_range, reference_range, default_scale) {
+    result <- specified_range * square_side_length
+    if (is.na(result[1]) && is.na(result[2])) { # If the user has not set range
+      result <- reference_range * default_scale
+    } else if (is.na(result[1])) { # If the user has set a maximum but not a minimum
+      result[1] <- result[2] * reference_range[1] / reference_range[2]
+    } else if (is.na(result[2])) { # If the user has set a minimum but not a maximum
+      result[2] <- result[1] * reference_range[2] / reference_range[1]
+    }
+    return(result)
+    }
+  
+  esr_plot <- infer_size_range(edge_size_range, vsr_plot, default_scale = 0.5)
+  data$es_plot <- metacoder:::rescale(data$es_t, to = esr_plot, from = edge_size_interval_trans)
+  #|
+  #| #### Infer tree size range -------------------------------------------------------------------
+  #|
+  get_tree_area <- function(a_root) {
+    size <- data[data$subgraph_root == a_root, "vs_plot"]
+    x <- data[data$subgraph_root == a_root, "vx_plot"]
+    x <- c(x + size, x - size)
+    y <- data[data$subgraph_root == a_root, "vy_plot"]
+    y <- c(y + size, y - size)
+    (max(x) - min(x)) * (max(y) - min(y)) 
+    }
+  tree_area <- vapply(unique(data$subgraph_root), get_tree_area, FUN.VALUE = numeric(1))
+  data$tree_area <- tree_area[data$subgraph_root]
+  tsr_plot <- range(sqrt(tree_area))
+  #|
+  #| #### Infer label size ranges -----------------------------------------------------------------
+  #|
+  if (all(is.na(data$tls_user))) {
+    data$tls_user <- sqrt(data$tree_area)
+    data$tls_trans <- apply_trans("tls_user") 
+    }
+  vlsr_plot <- infer_size_range(node_label_size_range, vsr_plot, default_scale = 0.8)
+  elsr_plot <- infer_size_range(edge_label_size_range, esr_plot, default_scale = 0.8)
+  tlsr_plot <- infer_size_range(tree_label_size_range, tsr_plot, default_scale = 0.1)
+  data$vls_plot <- metacoder:::rescale(data$vls_trans, to = vlsr_plot)
+  data$els_plot <- metacoder:::rescale(data$els_trans, to = elsr_plot)
+  data$tls_plot <- metacoder:::rescale(data$tls_trans, to = tlsr_plot)
+  #|
+  #| #### Assign color scales ---------------------------------------------------------------------
+  #|
+  
+  color_colume_key <- list("ec_trans" = edge_color_range, "vc_trans" = node_color_range, 
+                           "tc_trans" = tree_color_range, "vlc_trans" = node_label_color_range,
+                           "elc_trans" = edge_label_color_range, "tlc_trans" = tree_label_color_range)
+  color_interval_key <- list("ec_trans" = edge_color_interval_trans, "vc_trans" = node_color_interval_trans)
+  plot_value_names <- gsub(pattern = "_trans$", x = names(color_colume_key), replacement = "_plot")
+  data[, plot_value_names] <- lapply(names(color_colume_key),
+                                     function(x) metacoder:::apply_color_scale(data[ , x],
+                                                                   color_colume_key[[x]],
+                                                                   interval = color_interval_key[[x]]))
+  # If tree_color is used, overwrite other colors - - - - - - - - - - - - - - - - - - - - - - - - -
+  data$tc_plot <- data[data$subgraph_root, "tc_plot"]
+  to_replace <- ! is.na(data$tc_plot)
+  data[to_replace, "vc_plot"] <- data[to_replace, "tc_plot"]
+  data[to_replace, "ec_plot"] <- data[to_replace, "tc_plot"]
+  
+  #| ### Secondary plot data ======================================================================
+  #|
+  #| #### Calculate coordinants of graph elements -------------------------------------------------
+  #| The nodes and edges must be specified by a dataframe of coordinates, with a colume 
+  #| grouping the coordinates of each shape.
+  #| These shapes must be added to the graph in a specific order.
+  #| A list of nodes is sorted by first node depth in the heirarchy and then by node size.
+  taxon_elements <- function(tid) {
+    circle_resolution <- 35
+    edge_data <- metacoder:::line_coords(x1 = data[tid, 'vx_plot'],
+                             y1 = data[tid, 'vy_plot'],
+                             x2 = data[data[tid, 'pid_user'], "vx_plot"],
+                             y2 = data[data[tid, 'pid_user'], "vy_plot"],
+                             width = data[tid, 'es_plot'] * 2)
+    edge_data$group <- paste0(tid, "_edge")
+    edge_data$color <- rep(data[tid, 'ec_plot'], each = 4)
+    node_data <- metacoder:::polygon_coords(n = circle_resolution,
+                                x = data[tid, 'vx_plot'],
+                                y = data[tid, 'vy_plot'],
+                                radius = data[tid, 'vs_plot'])
+    node_data$group <- paste0(tid, "_node")
+    node_data$color <- rep(data[tid, 'vc_plot'], each = circle_resolution + 1)
+    output <- rbind(edge_data, node_data)
+    # output$tid_user <- tid
+    return(output[stats::complete.cases(output),])
+  }
+  data$level = metacoder:::edge_list_depth(data$tid_user, data$pid_user)
+  element_order <- data$tid_user[order(data$level, 1 / data$vs_plot, decreasing = TRUE)]
+  element_data <- do.call(rbind, lapply(element_order, taxon_elements))
+  element_data$group <- factor(element_data$group, levels = unique(element_data$group))
+  #|
+  #| #### Make text data ------------------------------------------------------------------
+  #|
+  # Get node label data - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+  data$vl_is_shown <- metacoder:::select_labels(data, node_label_max,
+                                    sort_by_column = c("vls_plot", "vs_plot"),
+                                    label_column = "vl_user")
+  if (any(data$vl_is_shown)) {
+    vl_data <- data[data$vl_is_shown, , drop = FALSE]
+    text_data <- data.frame(stringsAsFactors = FALSE,
+                            label = vl_data$vl_user,
+                            x = vl_data$vx_plot,
+                            y = vl_data$vy_plot,
+                            size = vl_data$vls_plot,
+                            color = vl_data$vlc_plot,
+                            rotation = 0,
+                            justification = "center",
+                            group = "nodes")
+  } else {
+    text_data <- NULL
+  }
+  # Get edge label data - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+  data$el_is_shown <- metacoder:::select_labels(data, edge_label_max,
+                                    sort_by_column = c("els_plot", "es_plot"),
+                                    label_column = "el_user")
+  data[is.na(data$pid_user), "el_is_shown"] <- FALSE # taxa with no parents get no line label
+  if (any(data$el_is_shown)) {
+    el_data <- data[data$el_is_shown, ]
+    # edge label rotation 
+    el_data$el_slope <- (el_data$vy_plot - data[el_data$pid_user, "vy_plot"]) / (el_data$vx_plot - data[el_data$pid_user, "vx_plot"])
+    el_data$el_slope[is.na(el_data$el_slope)] <- 0
+    el_data$el_rotation <- atan(el_data$el_slope)
+    # edge label coordinate 
+    line_label_offset = 1
+    justify <- data[el_data$pid_user, "vx_plot"] > el_data$vx_plot
+    justify[is.na(justify)] <- TRUE
+    justification <- ifelse(justify, "left-center", "right-center")
+    line_label_x_offset <- line_label_offset * el_data$vs_plot * cos(el_data$el_rotation)
+    line_label_y_offset <- line_label_offset * el_data$vs_plot * sin(el_data$el_rotation)
+    el_data$elx_plot <- el_data$vx_plot + ifelse(justify, 1, -1) * line_label_x_offset
+    el_data$ely_plot <- el_data$vy_plot + ifelse(justify, 1, -1) * line_label_y_offset
+    # create text data   
+    text_data <- rbind(text_data,
+                       data.frame(stringsAsFactors = FALSE, 
+                                  label = el_data$el_user,
+                                  x = el_data$elx_plot,
+                                  y = el_data$ely_plot,
+                                  size = el_data$els_plot,
+                                  color = el_data$elc_plot,
+                                  rotation = el_data$el_rotation,
+                                  justification = justification,
+                                  group = "edges"))
+  }
+  # Get tree label data - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+  data$tl_is_shown <- FALSE
+  data[data$is_root, "tl_is_shown"] <- metacoder:::select_labels(data[data$is_root, ], tree_label_max,
+                                                     sort_by_column = c("tls_plot", "vs_plot"), label_column = "tl_user")
+  if (any(data$tl_is_shown)) {
+    title_data <- data[data$tl_is_shown, , drop = FALSE]
+    tx_plot <- vapply(split(data$vx_plot, data$subgraph_root), FUN.VALUE = numeric(1),
+                      function(x) mean(range(x)))
+    title_data$tx_plot <- tx_plot[title_data$subgraph_root]
+    ty_plot <- vapply(split(data$vy_plot, data$subgraph_root), FUN.VALUE = numeric(1),
+                      function(y) mean(range(y)))
+    title_data$ty_plot <- ty_plot[title_data$subgraph_root]
+    title_data$tlx_plot <- title_data$tx_plot 
+    tly_plot <- mapply(function(y, size) max(y + size),
+                       y = split(data$vy_plot, data$subgraph_root),
+                       size = split(data$vs_plot, data$subgraph_root))
+    title_data$tly_plot <- tly_plot[title_data$subgraph_root] + title_data$tls_plot * 1.1
+    text_data <- rbind(text_data,
+                       data.frame(stringsAsFactors = FALSE, 
+                                  label = title_data$tl_user,
+                                  x = title_data$tlx_plot,
+                                  y = title_data$tly_plot,
+                                  size = title_data$tls_plot,
+                                  color = title_data$tlc_plot,
+                                  rotation = 0,
+                                  justification = "center",
+                                  group = "trees"))
+  }
+  
+  
+  
+  # Get range data ---------------------------------------------------------------------------------
+  get_limits <- function() {
+    label_corners <- metacoder:::label_bounds(label = text_data$label, x = text_data$x, y = text_data$y,
+                                  height = text_data$size, rotation = text_data$rotation,
+                                  just = text_data$justification)
+    x_points <- c(element_data$x, label_corners$x)
+    y_points <- c(element_data$y, label_corners$y)
+    margin_size_plot <- margin_size * square_side_length
+    x_range <- c(min(x_points) - margin_size_plot[1], max(x_points) + margin_size_plot[2]) 
+    y_range <- c(min(y_points) - margin_size_plot[3], max(y_points) + margin_size_plot[4]) 
+    return(list(x = x_range, y = y_range))
+  }
+  
+  # Add tree title data - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+  ranges <- get_limits() # UGLY HACK! FIX!
+  if (! is.null(title)) {
+    title_size <- diff(ranges$x) * title_size
+    text_data <- rbind(text_data,
+                       data.frame(stringsAsFactors = FALSE, 
+                                  label = title,
+                                  x = mean(ranges$x),
+                                  y = max(ranges$y) + title_size * 0.5,
+                                  size = title_size,
+                                  color = "#000000",
+                                  rotation = 0,
+                                  justification = "center-bottom",
+                                  group = "title"))
+  }
+  
+  
+  # Repel labels
+  ranges <- get_limits() # UGLY HACK! FIX!
+  reformat_bounds <- function(bounds) {
+    if (is.null(bounds)) {
+      return(NULL)
+    }
+    bounds$label <- factor(bounds$label, levels=unique(bounds$label)) # keep order when split
+    x_coords <- split(bounds$x, rep(seq_len(nrow(text_data)), each = 4))
+    y_coords <- split(bounds$y, rep(seq_len(nrow(text_data)), each = 4))
+    data.frame(label = text_data$label,
+               color = text_data$color,
+               rotation = metacoder:::rad_to_deg(text_data$rotation),
+               group = text_data$group,
+               xmin = vapply(x_coords, min, numeric(1)),
+               xmax = vapply(x_coords, max, numeric(1)),
+               ymin = vapply(y_coords, min, numeric(1)),
+               ymax = vapply(y_coords, max, numeric(1)),
+               stringsAsFactors = FALSE)
+  }
+  
+  if (!is.null(text_data)) {
+    bounds <- metacoder:::label_bounds(label = text_data$label, x = text_data$x, y = text_data$y,
+                           height = text_data$size, rotation = text_data$rotation,
+                           just = text_data$justification)
+    bounds <- reformat_bounds(bounds)
+    
+    if (repel_labels) {
+      movable <- text_data$group != "legend"
+      text_data[movable, c("x", "y")] <- metacoder:::repel_boxes(data_points = as.matrix(text_data[movable, c("x", "y")]),
+                                                     boxes = as.matrix(bounds[movable, c("xmin", "ymin", "xmax", "ymax")]),
+                                                     point_padding_x = 0, point_padding_y = 0,
+                                                     xlim = ranges$x,
+                                                     ylim = ranges$y,
+                                                     # hjust = 0.5,
+                                                     # vjust = 0.5,
+                                                     force = 1e-06 * repel_force,
+                                                     maxiter = repel_iter,
+                                                     direction = "both")
+      bounds <- metacoder:::label_bounds(label = text_data$label, x = text_data$x, y = text_data$y,
+                             height = text_data$size, rotation = text_data$rotation,
+                             just = text_data$justification)
+      bounds <- reformat_bounds(bounds)
+    }
+  } else {
+    bounds <- NULL
+  }
+  
+  
+  
+  #|
+  #| #### Make node legend -----------------------------------------------------------------------
+  #|
+  metacoder:::my_print("Making legends...", verbose = verbose)
+  if (make_node_legend | make_edge_legend) {
+    legend_length <- square_side_length * 0.3 
+    
+    # right_plot_boundry <- max(c(element_data[element_data$y <= legend_length + min(element_data$y), "x"],
+    #       bounds[bounds$ymin <= legend_length +  min(element_data$y), "xmax"]))
+    
+    if (is.null(bounds)) {
+      right_plot_boundry <- max(element_data$x)
+    } else {
+      right_plot_boundry <- max(c(element_data$x, bounds$xmax))
+    }
+    
+    if (make_node_legend) {
+      node_legend <- metacoder:::make_plot_legend(x = right_plot_boundry,
+                                      y = min(element_data$y) * 0.9, 
+                                      length = legend_length, 
+                                      width_range = vsr_plot * 2, 
+                                      width_trans_range = range(data$vs_trans) * 2,
+                                      width_stat_range =  node_size_interval,
+                                      width_sig_fig = node_size_digits,
+                                      group_prefix = "node_legend",
+                                      width_stat_trans = metacoder:::transform_data(func = node_size_trans, inverse = TRUE),
+                                      color_range = node_color_range,
+                                      color_trans_range = node_color_interval_trans,
+                                      color_stat_range = node_color_interval, 
+                                      color_sig_fig = node_color_digits,
+                                      color_stat_trans =  metacoder:::transform_data(func = node_color_trans, inverse = TRUE),
+                                      title = node_legend_title,
+                                      color_axis_label = node_color_axis_label,
+                                      size_axis_label = node_size_axis_label,
+                                      hide_size = missing(node_size),
+                                      hide_color = missing(node_color))
+      element_data <- rbind(element_data, node_legend$shapes)
+      text_data <- rbind(text_data, node_legend$labels)
+    }
+    #|
+    #| #### Make edge legend -----------------------------------------------------------------------
+    #|
+    
+    # right_plot_boundry <- max(c(element_data[element_data$y >= max(element_data$y) - legend_length, "x"],
+    #                             bounds[bounds$ymax >= max(element_data$y) - legend_length, "xmin"]))
+    
+    if (make_edge_legend) {
+      edge_legend <- metacoder:::make_plot_legend(x = right_plot_boundry,
+                                      y = max(element_data$y) - legend_length * 1.3, 
+                                      length = legend_length, 
+                                      width_range = esr_plot * 2, 
+                                      width_trans_range = range(data$vs_trans) * 2,
+                                      width_stat_range =  edge_size_interval,
+                                      width_sig_fig = edge_size_digits,
+                                      group_prefix = "edge_legend",
+                                      width_stat_trans = metacoder:::transform_data(func = edge_size_trans, inverse = TRUE),
+                                      color_range = edge_color_range,
+                                      color_trans_range = edge_color_interval_trans,
+                                      color_stat_range = edge_color_interval, 
+                                      color_sig_fig = edge_color_digits,
+                                      color_stat_trans =  metacoder:::transform_data(func = edge_color_trans, inverse = TRUE),
+                                      title = edge_legend_title,
+                                      color_axis_label = edge_color_axis_label,
+                                      size_axis_label = edge_size_axis_label,
+                                      hide_size = missing(edge_size),
+                                      hide_color = missing(edge_color))
+      element_data <- rbind(element_data, edge_legend$shapes)
+      text_data <- rbind(text_data, edge_legend$labels)
+    }
+    bounds <- metacoder:::label_bounds(label = text_data$label, x = text_data$x, y = text_data$y,
+                           height = text_data$size, rotation = text_data$rotation,
+                           just = text_data$justification)
+    bounds <- reformat_bounds(bounds)
+  } else {
+    legend_data <- NULL
+  }
+  
+  
+  
+  
+  #| ### Draw plot ================================================================================
+  # text_boxes <-  label_bounds(label = text_data$label, x = text_data$x, y = text_data$y,  # debug
+  #                                       height = text_data$size, rotation = text_data$rotation,
+  #                                       just = text_data$justification)
+  # text_boxes$group <- rep(seq_along(text_data$label), each = 4)  # debug
+  metacoder:::my_print("Plotting graph...", verbose = verbose)
+  result = tryCatch({
+    
+    ranges <- get_limits()
+    the_plot <- ggplot2::ggplot(data = data) +
+      ggplot2::geom_polygon(data = element_data, ggplot2::aes(x = .data[["x"]], y = .data[["y"]], group = .data[["group"]]),
+                            fill = element_data$color) +
+      ggplot2::guides(fill = "none") +
+      ggplot2::coord_fixed(xlim = ranges$x, ylim = ranges$y) +
+      ggplot2::scale_y_continuous(expand = c(0,0), limits = ranges$y) + 
+      ggplot2::scale_x_continuous(expand = c(0,0), limits = ranges$x) +
+      # ggplot2::geom_polygon(data = text_boxes, mapping = ggplot2::aes(x = x, y = y, group = group), color = "black", fill = NA) + # debug
+      ggplot2::theme(panel.grid = ggplot2::element_blank(), 
+                     panel.background = ggplot2::element_rect(fill = background_color, colour = background_color),
+                     plot.background = ggplot2::element_rect(fill = background_color, colour = background_color),
+                     axis.title = ggplot2::element_blank(),
+                     axis.text  = ggplot2::element_blank(),
+                     axis.ticks = ggplot2::element_blank(), 
+                     axis.line  = ggplot2::element_blank(),
+                     plot.margin = grid::unit(c(0,0,0,0) , "in"))
+    
+    # Plot text..
+    
+    if (! is.null(bounds)) {
+      bounds <- bounds[bounds$label != "" & ! is.na(bounds$label), ]
+      if (nrow(bounds) > 0) {
+        # the_plot <- the_plot + 
+        #   ggplot2::geom_rect(data = dplyr::filter(bounds,group!="legend"),
+        #                      fill = node_label_box_fill,
+        #                      color = node_label_box_color,
+        #                      alpha = node_label_box_alpha,
+        #                      ggplot2::aes(xmin = .data[["xmin"]],
+        #                                   xmax = .data[["xmax"]],
+        #                                   ymin = .data[["ymin"]],
+        #                                   ymax = .data[["ymax"]]))+
+        #   ggfittext::geom_fit_text(data = bounds, 
+        #                            grow = TRUE,
+        #                            min.size = 0,
+        #                            # reflow = TRUE,
+        #                            alpha = node_label_alpha,
+        #                            color = bounds$color,
+        #                            padding.x = grid::unit(0, "mm"),
+        #                            padding.y = grid::unit(0, "mm"),
+        #                            ggplot2::aes(label = .data[["label"]],
+        #                                         xmin = .data[["xmin"]],
+        #                                         xmax = .data[["xmax"]],
+        #                                         ymin = .data[["ymin"]],
+        #                                         ymax = .data[["ymax"]],
+        #                                         angle = .data[["rotation"]]))
+        the_plot <- the_plot + 
+          ggplot2::geom_label(data = dplyr::mutate(dplyr::filter(bounds,group!="legend"),
+                                                   xmean=(xmin+xmax)/2,
+                                                   ymean=(ymin+ymax)/2),
+                              fill = node_label_box_fill,
+                              color = node_label_box_color,
+                              alpha = node_label_box_alpha,
+                              label.size = NA,
+                              ggplot2::aes(x = xmean,
+                                           y = ymean,
+                                           label = .data[["label"]]))+
+          ggfittext::geom_fit_text(data = dplyr::filter(bounds,group=="legend"), 
+                                   grow = TRUE,
+                                   min.size = 0,
+                                   # reflow = TRUE,
+                                   alpha = node_label_alpha,
+                                   color = dplyr::filter(bounds,group=="legend")$color,
+                                   padding.x = grid::unit(0, "mm"),
+                                   padding.y = grid::unit(0, "mm"),
+                                   ggplot2::aes(label = .data[["label"]],
+                                                xmin = .data[["xmin"]],
+                                                xmax = .data[["xmax"]],
+                                                ymin = .data[["ymin"]],
+                                                ymax = .data[["ymax"]],
+                                                angle = .data[["rotation"]]))
+      }
+    }
+    
+    #| ### Save output file
+    if (!is.null(output_file)) {
+      img_width <- diff(ranges$x)
+      img_height <- diff(ranges$y)
+      for (path in output_file) {
+        ggplot2::ggsave(path, the_plot, bg = "transparent", width = 10, height = 10 * (img_height / img_width))
+      }
+    }
+    
+    
+  }, error = function(msg) {
+    if (grepl(msg$message, "Error: evaluation nested too deeply: infinite recursion / options(expressions=)?", fixed = TRUE)) {
+      stop(paste(msg, sep = "\n", 
+                 "NOTE: This error typically occurs because of too many text labels being printed.", 
+                 "You can avoid it by increasing the value of `expressions` in the global options:",
+                 "    * How to see the current value: options('expressions')",
+                 "    * How to increase the value:    options(expressions = 100000)"))
+    } else {
+      stop(msg)
+    }
+  })
+  
+  
+  
+  return(the_plot) #the_plot
+  }
+
+
+# function to create the text equation for distance decay
+fct_list$lm_eqn_dd <- function(df, lm_object,namez) {
+  eq <-
+    substitute(
+      bold(og~" :"~italic(y) == a~b %.% italic(x)*","~~italic(r)^2~"="~r2),
+      list(
+        og = namez,
+        a = format(unname(coef(lm_object)[1]), digits = 2),
+        b = format(unname(coef(lm_object)[2]), digits = 2),
+        r2 = format(summary(lm_object)$r.squared, digits = 3),
+        p = format(summary(lm_object)$coefficients[2,4], digits = 2)
+        )
+    )
+  as.character(as.expression(eq))
+}
+```
+
+
+# B - Sites
+
+We collated data from Google Earth Engine (GEE) using sample coordinate provided by our collaborators.
+These data are from different datasets and satellite sources available on  [GEE website](https://developers.google.com/earth-engine/datasets).
+
+Temporal data (Terra Climate, SMAP soil, Vegetation, Productivity) are average over years  and tagged "_lt" for "long-term".
+In addition to these long term data we retrieved monthly data from march (_03) to october (_10) of the sampling year (2021).
+These will be used to produce "short-term" (_st) data with the hypothesis that microbial communities are strongly affected by recent meteorology.
+
+For each variable is given: name - unit - scale - resolution.
+
+## Sites
+
+```{r}
+#satellite data
+site_data_raw <- read.csv("raw_data/sat_data.csv")
+site_data <- site_data_raw %>% 
+  mutate(across(.cols= colnames(site_data_raw),.fns = ~replace(., . ==  -9999 , NA))) # replace the NA placeholder -9999 with NAs
+rm(site_data_raw)
+
+
+#cyto data
+cyto_data <- read.csv2("raw_data/cytometry_data.csv")
+cyto_data <- cyto_data%>%
+  rename(Sample=ID)%>%
+  mutate(Sample=ifelse(stringr::str_count(Sample,"\\d")==1,paste0("MAPP_00",Sample),
+                       ifelse(stringr::str_count(Sample,"\\d")==2,paste0("MAPP_0",Sample),paste0("MAPP_",Sample))))%>%
+    mutate(bacg=(as.numeric(Bacteria_AB_mL)*2*4)/as.numeric(Dry_weight_g))%>%
+  select(Sample,bacg)%>%
+  rename(xtra_bacg=bacg)
+
+site_data%<>%left_join(cyto_data)%>%
+  mutate(xtra_bacg=ifelse(xtra_bacg==0,NA,xtra_bacg))
+
+#enz data
+enz_data <- readxl::read_xlsx("raw_data/enzymes_data.xlsx")
+enz_data%<>%
+  rename(Sample=ID)%>%
+  mutate(Sample=ifelse(stringr::str_count(Sample,"\\d")==1,paste0("MAPP_00",Sample),
+                       ifelse(stringr::str_count(Sample,"\\d")==2,paste0("MAPP_0",Sample),paste0("MAPP_",Sample))))%>%
+  rename_with(~stringr::str_c("xtra_", .), 2:5)
+
+site_data%<>%left_join(enz_data)
+```
+
+
+## climate zones
+
+```{r}
+library(kgc)
+kgc_zone <- data.frame(Sites=site_data$Sample,
+                       rndCoord.lon = kgc::RoundCoordinates(site_data$X),
+                       rndCoord.lat = kgc::RoundCoordinates(site_data$Y))
+ClimateZ <- kgc::LookupCZ(kgc_zone)
+site_data$climateZ_ori <- ClimateZ
+site_data$koppen_clim <- ClimateZ
+
+devtools::unload("plyr")
+devtools::unload("kgc")
+
+site_data%<>%
+  mutate(koppen_clim=ifelse(climateZ_ori%in%c('Cfa','Cfb','Csa','Csb'),"Temperate",koppen_clim))%>%
+  mutate(koppen_clim=ifelse(climateZ_ori%in%c('Dfa','Dfb',"Dwa","Dwb"),"Continental hot summer",koppen_clim))%>%
+  mutate(koppen_clim=ifelse(climateZ_ori%in%c('Dwc','ET','Dfc'),"Continental cold/Tundra",koppen_clim))
+
+climate_palette <- paletteer::paletteer_d("MetBrewer::Austria")[1:3]
+names(climate_palette) <- c("Continental hot summer","Continental cold/Tundra","Temperate")
+```
+
+
+##map sites 
+
+```{r}
+sf_df2map <- sf::st_as_sf(site_data, coords = c("X", "Y"), 
+                           crs = 4326, agr = "constant")
+
+world <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
+# Subset the world data to include only the specified latitude range
+cropping <- as(raster::extent(-180, 180, 27, 90), "SpatialPolygons")
+
+
+world_subset <- raster::crop(sf::as_Spatial(world),cropping)
+world_subset <- sf::st_transform(sf::st_as_sf(world_subset), crs = 4326)
+# Create a Lambert azimuthal equal-area projection centered on the North Pole
+world_lambert <- sf::st_transform(sf::st_as_sf(world_subset), crs = sf::st_crs(3995))
+
+donut <- list(cbind(x = c(0:360, 360:0, 0), y = c(rep(29, 361), c(rep(25,361)), 29))) %>% 
+  sf::st_polygon() %>%  
+  sf::st_sfc(crs = 4326) %>% 
+  sf::st_transform(sf::st_crs(3995)) 
+
+fortyfive <- cbind(x = 0:360, y = rep(29, 361)) %>% 
+  sf::st_linestring() %>%  
+  sf::st_sfc(crs = 4326) %>%
+  sf::st_transform(sf::st_crs(3995)) 
+
+mapproj <- 
+  ggplot() +
+  geom_sf(data = world_lambert, fill = "#FAEBD7", color = "darkgrey", size = 0.1)+
+  geom_sf(data = sf_df2map, size = 2, aes(color=koppen_clim) ,alpha=.7) +
+  geom_sf(data=fortyfive,color="black",linewidth=1)+
+  geom_sf(data=donut,fill="white",color=NA)+
+  ggtitle("") +
+  theme(plot.title = element_text(hjust = 0.5, size = 16))+
+  theme_void()+
+  scale_color_manual(values = climate_palette,name="Climatic zone")+
+  theme(text=element_text(face="bold"),
+        legend.position = 'bottom',
+        legend.direction = "horizontal",
+        legend.title = element_blank())
+mapproj
+```
+
+## Available Data
+
+### Terra Climate
+
+These are monthly weather data.
+Long term : 2016/01/01 to 2021/01/01
+
+With scale being a scaling factor by which to multiply the variable to get the right values.
+
+**aet**: actual evapotranspiration - mm - 0.1 - 4638.3m
+**def**: Climate water deficit - mm - 0.1 - 4638.3m
+**pdsi**: Palmer drought severity index (temperature and precipitation -10 to +10 : dry to wet) - no unit - 0.01 - 4638.3m  
+**pet**: Reference evapotranspiration - mm - 0.1 - 4638.3m  
+**pr**: Precipitation accumulation (@ the end of the month) - mm - no scale - 4638.3m  
+**srad**: Downward surface shortwave radiation - W/m^2 - 0.1 - 4638.3m  
+**swe**: Snow water equivalent - mm - no scale - 4638.3m  
+**tmmn**: Minimum Temperature - °C - 0.1 - 4638.3m  
+**tmmx**: Maximum Temperature - °C - 0.1 - 4638.3m  
+**vap**: Vapor pressure - KPa - 0.001 - 4638.3m  
+**vpd**: Vapor pressure deficit - kPa - 0.01 - 4638.3m  
+**moist**: Soil moisture - mm - 0.1 - 4638.3m  
+
+### SMAP soil
+
+NASA/SMAP/SPL3SMP_E/005
+
+These are monthly soil data.
+Long term : 2016/01/01 to 2021/01/01
+
+**soil_moisture**: Top layer soil moisture (0 - 5) - volume fraction - no scale - 9000 m
+
+
+### Topography
+
+USGS/GMTED2010_FULL
+
+**elevation**: Min elevation - m - no scale - 231.92m
+
+### Vegetation
+
+MODIS/006/MOD13Q1
+MODIS/006/MCD15A3H
+
+Long term : 2016/01/01 to 2021/01/01
+
+**ndvi**: Normalized difference vegetation index over 16days - no unit - 0.0001 - 250m
+**evi**: Enhanced vegetation index over 16days - no unit - 0.0001 - 250m
+**lai**: Leaf area index over 4days - no unit - 0.1 - 500m
+**fpar**: Fraction of absorbed photosynthecatilly active radiation (400-700nm) absorbed by the green elements of a vegetation canopy over 4days - no unit - 0.001 - 500m
+
+### Productivity
+
+MODIS/006/MOD17A2H
+
+Long term : 2016/01/01 to 2021/01/01
+
+**gpp**: Gross primary production 8days - kg*C/m^2 - 0.0001 - 500m
+**npp**: Net primary production 8days - kg*C/m^2 - 0.0001 - 500m
+
+### Open Land Map Soil
+
+OpenLandMap/SOL/SOL_BULKDENS-FINEEARTH_USDA-4A1H_M/v02
+OpenLandMap/SOL/SOL_CLAY-WFRACTION_USDA-3A1A1A_M/v02
+OpenLandMap/SOL/SOL_ORGANIC-CARBON_USDA-6A1C_M/v02
+OpenLandMap/SOL/SOL_PH-H2O_USDA-4C1A2A_M/v02
+OpenLandMap/SOL/SOL_WATERCONTENT-33KPA_USDA-4B1C_M/v01
+
+**bulk**: Bulk density @ 0 cm depth - kg/m^3 - 10 - 250m
+**clay**: Clay content @ 0 cm depth - % (kg / kg) - no scale - 250m
+**soc**: Organic carbon content @0 cm depth - g/kg - 5 - 250m
+**ph**: pH in H20 @ 0 cm depth - pH - 10 - 250m
+**water**: Water content @ field capacity (33kPa) @ 0 cm depth - % - no scale - 250m
+
+### Human variables: Global Human Modification
+
+CSP/HM/GlobalHumanModification
+
+**ghm**: Global human modification index - fraction of a km^2 - no scale - 1000m
+
+
+### Count NAs and Imputations
+
+
+```{r}
+site_data %<>% # remove short term variable 
+    dplyr::select(names(.)[!grepl('_[0-9]{2}', names(.))])
+
+var_missing_val <- as.data.frame(colSums(is.na(select(site_data,names(site_data)[!grepl('xtra', names(site_data))]))))%>% # plot NAs counts and %of variables
+    rename(nb_na=`colSums(is.na(select(site_data, names(site_data)[!grepl("xtra", names(site_data))])))`)%>%
+    mutate(var=rownames(.))%>%
+    filter(nb_na!=0)%>%
+    ggplot(aes(x=var,y=nb_na))+
+    geom_bar(stat='identity',color='midnightblue',fill="white",width=1)+
+    ggpubr::theme_classic2()+
+    theme(axis.text.x = element_text(angle=45,hjust=1),
+          plot.title = element_text(face="bold"))+
+    scale_y_continuous(expand = c(0,0))+
+    ggtitle("Number of missing values")+
+as.data.frame(colSums(is.na(select(site_data,names(site_data)[!grepl('xtra', names(site_data))]))))%>%    rename(nb_na=`colSums(is.na(select(site_data, names(site_data)[!grepl("xtra", names(site_data))])))`)%>%
+    mutate(var=rownames(.),
+           na_pct=(nb_na/202)*100)%>%
+    filter(nb_na!=0)%>%
+    mutate(non_na_pct=100-na_pct)%>%
+    reshape2::melt(id.variables=c(var,nb_na))%>%
+    filter(variable!="nb_na")%>%
+    mutate(variable=forcats::fct_relevel(variable,"non_na_pct","na_pct"))%>%
+    ggplot(aes(x=var,y=value,fill=variable))+
+    geom_bar(stat='identity',width=1,position="fill")+
+    scale_fill_manual(values=c("lightgrey","mediumvioletred"))+
+    ggpubr::theme_classic2()+
+    theme(axis.text.x = element_text(angle=45,hjust=1),
+          plot.title = element_text(face="bold"))+
+    ggtitle("Percentage of missing values")+
+    scale_y_continuous(expand = c(0,0))
+
+var_missing_val
+```
+
+Lots of missing value for soi moisture, lets remove it. 
+```{r}
+site_data%<>%
+  select(-soil_moisture_lt)
+```
+
+
+### Impute missing data
+
+We perform missing data imputation using missMDA package.
+
+```{r} 
+var_lt <- names(site_data)[grepl("_lt",names(site_data))]
+# Get the number of PCs we need to infer our missing values
+ncp_data_lt <- site_data %>%  
+    dplyr::select(all_of(c("X","Y",var_lt,"bulk","gHM","height","ph","soc","water"))) %>%
+    missMDA::estim_ncpPCA(scale=T)
+
+# Impute our missing values and store them in a new 'imputed' data frame
+imputed_data_lt <- site_data %>% 
+    dplyr::select(all_of(c("X","Y",var_lt,"bulk","gHM","height","ph","soc","water")))%>%
+    missMDA::imputePCA(ncp=5,scale=T)
+imputed_data_lt <- imputed_data_lt$completeObs %>% as.data.frame()
+```
+
+## Select variables
+
+### Histogram of variables
+
+```{r,message=FALSE}
+plot_list <- NULL
+for(i in 1:ncol(imputed_data_lt)){
+  plot_list[[names(imputed_data_lt[i])]] <- local({
+    i <- i
+    ggplot(imputed_data_lt,aes(x=imputed_data_lt[,i]))+
+      geom_histogram(fill="darkolivegreen3")+
+      ggpubr::theme_classic2()+
+      xlab(names(imputed_data_lt[i]))})
+  
+}
+wrap_plots(plot_list)
+```
+
+### Var correlation
+
+```{r}
+names(imputed_data_lt) <- gsub("_.t$","",names(imputed_data_lt))
+pairs <- GGally::ggpairs(imputed_data_lt,
+                 columns=3:ncol(imputed_data_lt),
+                 progress = F,
+                 axisLabels = "none",
+                 # LOWER TRIANGLE ELEMENTS: add line with smoothing; make points transparent and smaller
+                 lower = list(continuous = function(...) 
+                   GGally::ggally_smooth(..., colour="darkolivegreen3", alpha = 0.3, size=0.8)), 
+                 # DIAGONAL ELEMENTS: histograms
+                 diag = list(continuous = function(...) 
+                   GGally::ggally_barDiag(..., fill="grey")),
+                 
+                 # UPPER TRIANGLE ELEMENTS: use fct. creating corr heatmap with sign stars
+                 upper = list(continuous = cor_fun)) + 
+  theme(strip.background = element_blank(), # remove color
+        strip.text = element_text(size=6,angle=45), # change font and font size
+        axis.line = element_line(colour = "grey"),
+        # remove grid
+        panel.grid.minor = element_blank(), )+  # remove smaller gridlines
+  # panel.grid.major = element_blank()    # remove larger gridlines)
+  theme(plot.title = element_text(face="bold"))
+pairs
+```
+
+
+
+##PCA sites
+
+```{r}
+pca_sites_lt <- imputed_data_lt %>% 
+    dplyr::select(-c(X,Y))%>%
+    FactoMineR::PCA(scale.unit = T,
+                    graph = F)
+
+factoextra::fviz_pca_biplot(pca_sites_lt)
+```
+
+We decided to Keep for further analysis:
+  - pH
+  - Precipitation
+  - Snow water equivalent
+  - T° min
+  - Vapor pressure deficit
+  - Growth primary production
+  - Elevation
+```{r}
+names_df_clean <-data.frame(fullname= c("Geographic","pH","Precipitation","Snow water equivalent", "T° min","Vapor pressure deficit", "Growth primary production","Elevation"),
+                            Var2= c("Geographic","ph","pr","swe", "tmmn","vpd","gpp","height"),
+                            midname= c("Geographic","pH","Precipitation","Snow water eq","T° min","VPD","GPP","Elevation"))
+var2use <- c("ph","pr_lt","swe_lt", "tmmn_lt","vpd_lt","gpp_lt","height")
+```
+And to replace NA values with their imputed values.
+
+```{r}
+site_data$ph <- imputed_data_lt$ph
+site_data$gpp_lt <- imputed_data_lt$gpp
+```
+
+
+
+```{r}
+pca_tmp <- site_data %>% 
+  dplyr::select(all_of(c(var2use[-7],"X","Y")))%>%
+  dplyr::rename(Longitude=X,Latitude=Y)%>%
+  FactoMineR::PCA(scale.unit = T,
+                  graph = F,
+                  quanti.sup=c(7:8))
+
+eig <- pca_tmp$eig
+coord_pca <- as.data.frame(pca_tmp$ind$coord)
+
+rownames(pca_tmp$var$coord) <- gsub("_lt$","",rownames(pca_tmp$var$coord))
+rownames(pca_tmp$var$coord) <- names_df_clean$midname[match(rownames(pca_tmp$var$coord),names_df_clean$Var2)]
+
+coord_pca$site <- site_data$Sample
+coord_pca$koppen_clim <- site_data$koppen_clim
+mul <- arrowMul(as.data.frame(pca_tmp$var$coord),
+                pca_tmp$ind$coord,
+                pca_tmp$quanti.sup$coord)
+
+
+pca_site_var <- ggplot()+
+  geom_point(coord_pca,mapping=aes(x=Dim.1,y=Dim.2,color=koppen_clim))+
+  ggpubr::theme_classic2()+
+  geom_vline(xintercept = 0,lty=2)+
+  geom_hline(yintercept = 0,lty=2)+
+  xlab(paste0("PC1 (",round(eig[1,2],2),"%)"))+
+  ylab(paste0("PC2 (",round(eig[2,2],2),"%)"))+
+  geom_segment(data= as.data.frame(pca_tmp$var$coord),aes(x = 0, y = 0, xend=mul*Dim.1, yend=mul*Dim.2),
+               lineend = "round", 
+               linejoin = "round",
+               linewidth = .75, 
+               arrow = arrow(length = unit(0.2, "inches")),
+               colour = "black" 
+  )+
+  geom_segment(data= as.data.frame(pca_tmp$quanti.sup$coord),aes(x = 0, y = 0, xend=mul*Dim.1, yend=mul*Dim.2),
+               lineend = "round", 
+               linejoin = "round",
+               linewidth = .75, 
+               arrow = arrow(length = unit(0.2, "inches")),
+               colour = "grey" 
+  )+
+  ggrepel::geom_text_repel(data = data.frame(var=rownames(pca_tmp$var$coord),pca_tmp$var$coord*mul), # add variable names at the end of arrows
+                           aes(x = Dim.1*1.2, # nudge a bit the coordinates so that they're not on the arrows
+                               y = Dim.2*1.2,
+                               label = var),
+                           max.overlaps = getOption("ggrepel.max.overlaps", default = 15))+
+  ggrepel::geom_text_repel(data = data.frame(var=rownames(pca_tmp$quanti.sup$coord),pca_tmp$quanti.sup$coord*mul), # add variable names at the end of arrows
+                           aes(x = Dim.1*1.2, # nudge a bit the coordinates so that they're not on the arrows
+                               y = Dim.2*1.2,
+                               label = var),
+                           max.overlaps = getOption("ggrepel.max.overlaps", default = 15))+
+  scale_color_manual(values = climate_palette,name="Climatic zone")+
+  theme(text=element_text(face="bold"))+
+     guides(color = guide_legend(override.aes = list(size = 3) ) )
+
+scree_plot_var_list <- factoextra::fviz_screeplot(pca_tmp,barfill = "lightgrey", barcolor="lightgrey")+
+  geom_hline(yintercept = 100/(length(var2use)+1),color="red",lty=2)+
+  ggpubr::theme_classic2()+
+  theme(text=element_text(face="bold"),
+        plot.title = element_blank())+
+  scale_y_continuous(expand=c(0,0))
+
+pca_site_var+scree_plot_var_list
+```
+
+
+# C - MetabaR Processing
+
+## prepare metabarlist
+
+```{r}
+path_seq <- "raw_data/dada2/MAPP_250_seqtabnochim.csv"
+seq_tab <- data.table::fread(path_seq)
+seq_file <- seq_tab$V1
+seq_tab <- seq_tab%>%
+  rename(Sample=V1)%>%
+  mutate(Sample=paste0("MAPP_",toupper(gsub("^C","",Sample))))
+
+seq_tab%<>%
+  filter(Sample%in%site_data$Sample)
+
+rownames(seq_tab) <- seq_tab$Sample
+sam_tab <- seq_tab[,1]
+sam_tab%<>%left_join(site_data)
+
+path_tax <- "raw_data/dada2/MAPP_250_taxassigned.csv"
+tax_tab <- data.table::fread(path_tax)
+tax_tab%<>%
+  rename(sequence=sequences)%>%
+  filter(sequence%in%colnames(seq_tab))
+
+rownames(tax_tab) <- sprintf("ASV_%05d", 1:nrow(tax_tab))
+tax_tab%<>%
+  mutate(ASV_id=rownames(.), .before = sequence)
+
+all(colnames(seq_tab[,-1])==tax_tab$sequence)
+colnames(seq_tab)[-1] <- tax_tab$ASV_id
+
+sam_tab%<>%
+  mutate(nb_asvs=rowSums(seq_tab[,-1]>1),
+         nb_reads=rowSums(seq_tab[,-1]))
+
+microtu <- data.frame(t(seq_tab[,-1]))
+microsam <- data.frame(sam_tab)
+microtax <- data.frame(tax_tab)
+
+rownames(microtax) <- microtax$ASV_id
+colnames(microtu) <- microsam$Sample
+rownames(microsam) <- microsam$Sample
+
+pcr_frame <- microsam%<>%
+  mutate(type="sample",control_type=NA,sample_id=Sample) # set pcr frame as required by metabaR
+rownames(pcr_frame) <- pcr_frame$sample_id # set rownames as site/sample id
+
+metab_list <- metabaR::metabarlist_generator(reads = t(as.matrix(microtu)), # create metabarlist
+                                    motus = microtax,
+                                    pcrs = microsam,
+                                    samples = microsam)
+
+
+```
+
+
+
+## Start MetabaR processing
+
+
+### Evaluate PCRs on sequencing depths
+
+Plot number of ASVs and reads per PCRs as well as their correlation.
+Correlation between reads and richness are problematic as they might indicate insufficient sequencing depth.
+```{r}
+data_temp <- metab_list# get one metabarlist
+
+# Compute the number of reads per pcr
+data_temp$pcrs$nb_reads <- rowSums(data_temp$reads)
+
+# Compute the number of asvs per pcr
+data_temp$pcrs$nb_asvs <- rowSums(data_temp$reads>0)
+metab_list <- data_temp
+check1 <- reshape2::melt(data_temp$pcrs[,c("control_type", "nb_reads", "nb_asvs")])
+
+p1 <- ggplot(data <- check1, aes(x=1, y=value)) + 
+    geom_boxplot(outlier.shape = NA) + 
+    theme_bw() + 
+    geom_jitter(alpha=0.2) + 
+    facet_wrap(~variable, scales = "free_y") +
+    ggtitle("16s")+ 
+    theme(axis.text.x = element_blank(),
+          axis.title = element_blank(),
+          plot.title = element_text(face="bold"))
+
+p2 <-  ggplot(data_temp$pcrs, aes(x=nb_reads, y=nb_asvs)) + 
+    geom_point() + 
+    theme_bw() + 
+    scale_y_log10() + 
+    scale_x_log10()+
+  geom_smooth(method=lm)
+
+diagplot <- p1 + p2 + plot_layout(guides="collect") # sample 124 low reads?
+rm(p1,p2,data_temp,check1,data)
+diagplot
+```
+
+we see a correlation between reads and richness (we will rarefy). 
+
+Flag pcrs according to seq depths
+```{r}
+data_temp <- metab_list
+# Tag as ok pcrs with more than 10 000 reads
+data_temp$pcrs$seqdepth_ok <- ifelse(data_temp$pcrs$nb_reads < 10e3, F, T)
+
+# Overwrite
+metab_list <- data_temp 
+
+# proportion of innaceptable pcrs seq depth, control excluded!!
+seq_depth_tab <- table(data_temp$pcrs$seqdepth_ok[data_temp$pcrs$type=="sample"]) /
+    nrow(data_temp$pcrs[data_temp$pcrs$type=="sample",])
+print(seq_depth_tab)
+rm(data_temp)
+```
+Sequencing depths is satisfying for all sites.
+
+### Remove non target ASVs
+
+Tag non target ASVs
+```{r}
+non_target_prop <- NULL
+non_targetconta_prop <- NULL
+
+data_temp <- metab_list
+
+#Flag ASVs corresponding to target (TRUE) vs. non-target (FALSE) taxa 
+data_temp$motus$target_taxon <- grepl("Bacteria|Archaea", data_temp$motus$Kingdom)&!grepl("Chloroplast",data_temp$motus$Order)&!grepl("Mitochondria",data_temp$motus$Family)  # MITO 
+non_targ_asvs <- data_temp$motus$observation_name[which(data_temp$motus$target_taxon==F)]
+# Proportion of each of these over total number of ASVs
+non_target_prop <- table(data_temp$motus$target_taxon) / nrow(data_temp$motus)
+print(non_target_prop)
+# Intersection with extraction contaminant flags (not contaminant = T)
+non_target_prop <- table(data_temp$motus$target_taxon)
+print(non_target_prop)
+
+# Overwrite
+metab_list <- data_temp
+```
+
+
+### Filter and format according to Assignment quality
+
+
+Tag as poorly assigned Sequences with no assignment at the kingdom lvl (ie with RDP bootstrap values <70: boots_thshld choosen earlier) 
+```{r}
+boots_thshld <- 0.75 # define a RDP classifier bootstrap value under which we consider affiliation uncertain
+
+# test <- NULL
+data_temp <- metab_list
+melty <- reshape2::melt(data_temp$motus, id = c(colnames(data_temp$motus)[which(grepl("_boots",colnames(data_temp$motus))==F)] ))
+melty$variable <- gsub("_boots","",melty$variable)
+melty$variable <- as.factor(melty$variable)
+
+melty$variable <- forcats::fct_relevel(melty$variable,"Kingdom","Phylum","Class","Order","Family","Genus","Species")
+
+plot_tax_boots <-  ggplot(melty,aes(x=variable,y=as.numeric(value))) +
+    geom_boxplot(aes(fill=variable))+
+    theme_bw()+
+    ggtitle("16s")+
+    labs(y="conf %")+
+    theme(panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          axis.title.x = element_blank())+
+    theme(legend.position = "n",
+          plot.title = element_text(face = "bold"))
+
+# Create a "confident taxonomy" (boots >= boots_thshld)
+colnames_tmp <- c(gsub("_boots","",grep("_boots",colnames(data_temp$motus), value = T)))
+
+for(j in 1:length(colnames_tmp)){
+    
+    col <- match(colnames_tmp[j],colnames(data_temp$motus))
+    a <- data_temp$motus[,c(col,col+1)]
+    tax_lvl <- paste0(tolower(substr(names(a)[2],7,7)),"__")
+    conf <- a %>% mutate(col_temp=ifelse(.[[2]]<boots_thshld,gsub(".*",tax_lvl,.[[1]],perl=T),.[[1]]))
+    data_temp$motus <- cbind(data_temp$motus,conf[,3])
+    colnames(data_temp$motus)[ncol(data_temp$motus)]<- paste0(colnames_tmp[j],"_conf_rdp")
+}
+
+# Tag sequences not assigned @the kingdum level
+data_temp$motus %<>% mutate(good_assign = ifelse(is.na(Kingdom_conf_rdp),F,T))
+
+# Overwrite
+metab_list <- data_temp
+rm(data_temp,melty)
+
+plot_tax_boots
+```
+
+### Display noise in ASVs
+
+summarize noise in ASVs
+```{r}
+# color_scale (create a common scale across datasets)
+a <- unlist(combn(c("untargeted_taxon","poorly_assigned"),1,simplify = F))
+b <- c("poorly_assigned|untargeted_taxon")
+myColors <- RColorBrewer::brewer.pal(8,"Set1")
+names(myColors) <- levels(as.factor(c(a,b,"not_artefactual")))
+colScale <- scale_fill_manual(name = "grp",values = myColors, drop=F)
+
+data_temp <- metab_list
+
+# Create a table of ASVs quality criteria 
+# noise is identified as FALSE in data_temp, the "!" transforms it to TRUE 
+asvs.qual <- !data_temp$motus[,c("target_taxon","good_assign")] #not_degraded 
+colnames(asvs.qual) <- c("untargeted_taxon","poorly_assigned") #degraded_seq  
+
+asv_noise_tab <- NULL
+# Proportion of asvs potentially artifactual (TRUE) based on the criteria used
+asv_noise_tab$motus <- prop.table(table(apply(asvs.qual, 1, sum) > 0))
+
+data_temp$motus%<>%
+  mutate(observation_sum=colSums(data_temp$reads))
+
+# Corresponding proportion of artifactual reads (TRUE)
+asv_noise_tab$reads <- prop.table(xtabs(data_temp$motus$observation_sum~apply(asvs.qual, 1, sum) > 0))
+
+# Proportion of asvs and reads potentially artifactual for each criterion
+apply(asvs.qual, 2, sum) / nrow(asvs.qual)
+apply(asvs.qual, 2, function(x) sum(data_temp$motus$observation_sum[x])/sum(data_temp$motus$observation_sum))
+
+tmp.asvs <- 
+    apply(sapply(1:ncol(asvs.qual), function(x) {
+        ifelse(asvs.qual[,x]==T, colnames(asvs.qual)[x], NA)}), 1, function(x) {
+            paste(sort(unique(x)), collapse = "|")
+        })
+tmp.asvs <- as.data.frame(gsub("^$", "not_artefactual", tmp.asvs))
+colnames(tmp.asvs) <-  "artefact_type"
+tmp.asvs %<>% mutate(artefact_type=as.factor(artefact_type)  )
+
+plot_noise_asv <- ggplot(tmp.asvs, aes(x=1, fill=artefact_type)) +
+    geom_bar() +  xlim(0, 2) +
+    labs(fill="Artifact type") + 
+    coord_polar(theta="y") + theme_void() + 
+    scale_fill_manual(name = "Noise type",values = myColors, drop=F) + 
+    theme(legend.direction = "vertical") + 
+    ggtitle("16s - ASVS noise")+
+    theme(plot.title = element_text(face="bold"))
+
+rm(tmp.asvs,asvs.qual,data_temp,myColors,colScale,a,b)
+
+plot_noise_asv
+```
+
+### Filter 
+
+
+```{r}
+tmp <- metab_list
+
+# Subset on ASVs: we keep asvs that are defined as TRUE following the 
+# criteria below (sum of x TRUE is equal to x with the rowSums function)
+row.names(tmp$motus) <- colnames(tmp$reads)
+
+tmp <- metabaR::subset_metabarlist(tmp, "motus", 
+                          indices = rowSums(tmp$motus[,c("good_assign", "target_taxon")]) == 2)# remove untargeted taxa and poorly assigned (no assignation @phylum)
+
+# Subset on pcrs and keep only samples 
+data_temp <- metabaR::subset_metabarlist(tmp, "pcrs", 
+                                indices = tmp$pcrs[,c("seqdepth_ok")] == TRUE & #, "replicating_pcr" 
+                                    tmp$pcrs$type == "sample")
+
+#update counts and reads.    
+data_temp$motus$counts = colSums(data_temp$reads)
+data_temp$pcrs$reads_post = rowSums(data_temp$reads)
+data_temp$pcrs$asvs_post = rowSums(ifelse(data_temp$reads>0, T, F))
+
+check <- reshape2::melt(data_temp$pcrs[,c("nb_reads", "reads_post", 
+                                "nb_asvs", "asvs_post")])
+check$type <- ifelse(grepl("asvs", check$variable), "richness", "abundance")
+
+summary_list <- metabaR::summary_metabarlist(data_temp)
+
+if(sum(colSums(data_temp$reads)==0)>0){print(paste0(folder_names[[i]]," empty asvs present"))}
+if(sum(colSums(data_temp$reads)==0)>0){print(paste0(folder_names[[i]]," empty pcrs present"))}
+
+sumpipeline_plots <- ggplot(data = check, aes(x = variable, y = value)) +
+    geom_boxplot( color = "darkgrey") +
+    geom_jitter(alpha=0.1, color = "darkgrey") +
+    theme_bw() +
+    facet_wrap(~type, scales = "free", ncol = 5) +
+    theme(axis.text.x = element_text(angle=45, h=1),
+          axis.title = element_blank()) +
+    ggtitle("Effect of cleaning")
+
+cleaned_metablist <- data_temp
+rm(tmp,data_temp,check)
+sumpipeline_plots
+```
+
+### Check effect of filter on reads and richness
+
+
+```{r}
+# Using the nb_reads and nb_asvs defined previously in the data_temp$pcrs table
+data_temp <- cleaned_metablist
+
+check1 <- reshape2::melt(data_temp$pcrs[,c("control_type", "reads_post", "asvs_post")])
+
+p1 <- ggplot(data <- check1, aes(x=1, y=value)) + 
+    geom_boxplot(outlier.shape = NA) + 
+    theme_bw() + 
+    geom_jitter(alpha=0.2) + 
+    facet_wrap(~variable, scales = "free_y") +
+    ggtitle("")+ 
+    theme(axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.x = element_blank())
+
+p2 <-  ggplot(data_temp$pcrs, aes(x=reads_post, y=asvs_post)) + 
+    geom_point() + 
+    theme_bw() + 
+    geom_smooth(method="lm",color="darkorange")+ 
+    theme(axis.title.x = element_blank())
+
+diag_plots_post <-  p1 + p2 + plot_layout(guides="collect")
+rm(p1,p2,data_temp,check1,data)
+
+diag_plots_post
+```
+
+OK we have strong correlation between richness and reads within samples (We will definitely rarefy)
+
+## Data wrangling
+
+### Transform to physeq lists
+
+
+```{r}
+data_temp_cleaned <- cleaned_metablist
+data_temp <- metab_list
+
+rownames(data_temp$motus) <- colnames(data_temp$reads)
+# Get row data only for samples
+tmp <- metabaR::subset_metabarlist(data_temp, table = "pcrs",
+                          indices = data_temp$pcrs$type == "sample")
+
+tmpcl <- metabaR::subset_metabarlist(data_temp_cleaned, table = "pcrs",
+                            indices = data_temp_cleaned$pcrs$type == "sample")
+
+# Format for phyloseq
+
+otumat <- as.matrix(tmp$reads)
+taxmat <- as.matrix(tmp$motus)
+sammat <- tmp$pcrs
+OTU <- phyloseq::otu_table(otumat, taxa_are_rows = F)
+TAX <- phyloseq::tax_table(taxmat)
+SAM <- phyloseq::sample_data(sammat)
+rownames(SAM) <- SAM$sample_id
+physeq <- phyloseq::phyloseq(OTU,TAX,SAM)
+
+otumatcl <- as.matrix(tmpcl$reads)
+taxmatcl <- as.matrix(tmpcl$motus)
+sammatcl <- tmpcl$pcrs
+OTUcl <- phyloseq::otu_table(otumatcl, taxa_are_rows = F)
+TAXcl <- phyloseq::tax_table(taxmatcl)
+SAMcl <- phyloseq::sample_data(sammatcl)
+rownames(SAMcl) <- SAMcl$sample_id
+physeqcl <- phyloseq::phyloseq(OTUcl,TAXcl,SAMcl)
+```
+
+
+### Transform to microeco
+
+```{r}
+meco_16s <- file2meco::phyloseq2meco(physeqcl)
+
+meco_16s$tidy_dataset() #tidy datasets
+
+# Compute the number of reads per pcr
+meco_16s$sample_table$nb_reads <- colSums(meco_16s$otu_table)
+
+# Compute the number of asvs per pcr
+meco_16s$sample_table$nb_asvs <- colSums(meco_16s$otu_table>0)
+
+#remove singletons
+meco_16s$otu_table <- meco_16s$otu_table[rowSums(meco_16s$otu_table)>1,]
+
+meco_16s$tidy_dataset() #tidy datasets
+
+#rarefy
+meco_16s$rarefy_samples(sample.size=7000)
+
+meco_16s$sample_table%<>%
+  mutate(nb_reads_raref=colSums(meco_16s$otu_table),
+         nb_asvs_raref=colSums(meco_16s$otu_table>1))
+meco_16s$tidy_dataset()
+```
+
+### Get a phylogenetic tree 
+
+We cant create a robust phylogenetic tree with only 16s DNA but it will be used to display ASV informations without interpretation of their exact relation. The tree should conserve the higher taxonomical relation.
+
+```{r}
+phy <- file2meco::meco2phyloseq(meco_16s)
+fasta <- paste0(paste0(">",rownames(phy@tax_table)),"\n",gsub("s__","",phy@tax_table[,2]))
+write(fasta,"processed_data/fasta4tree.fasta")
+
+#generate trees
+mySequences <- Biostrings::readDNAStringSet("processed_data/fasta4tree.fasta")
+aligned <- msa::msa(mySequences,method = "ClustalW")
+aligned <- msaConvert(aligned,type="phangorn::phyDat")
+dist.aln<-dist.ml(aligned,model="JC69")
+treeUPGMA <- upgma(dist.aln)
+```
+
+
+### Compute MEMs
+
+```{r}
+mem_sites <- adespatial::dbmem(as.dist(geosphere::distm(meco_16s$sample_table[,c("X","Y")],fun = geosphere::distGeo)),MEM.autocor = "positive")
+```
+
+Map'em
+```{r}
+df_mems <- mem_sites
+df_mems <- as_tibble(df_mems)
+df_mems%<>%  
+  mutate(across(.cols=everything(),.fns=~ifelse(.>0,"Pos","Neg"),.names = "{.col}_fill"))
+
+dumb <- data.frame(x=1:3)
+
+df_mems$long <- meco_16s$sample_table$X
+df_mems$lat <- meco_16s$sample_table$Y
+df_mems%<>%
+  reshape2:: melt(id.vars = c('long','lat'))
+
+df_mems <- cbind(filter(df_mems,grepl("fill",variable)),filter(df_mems[,c(3,4)],!grepl("fill",variable)))
+names(df_mems) <- c("long","lat","var1","fillval","var2","value")
+df_mems$value <- as.numeric(df_mems$value)
+
+df_mems <- sf::st_as_sf(df_mems, coords = c("long", "lat"), 
+                         crs = 4326, agr = "constant")
+map_mem <- ggplot() +
+  geom_sf(data = world_lambert, fill = "grey", color = "darkgrey", size = 0.1)+
+  geom_sf(data=df_mems, aes(fill=fillval,size=abs(value)),shape=22)+
+  facet_wrap(~var2)+
+  ggtitle("MEMs across sites") +
+  theme(plot.title = element_text(hjust = 0.5))+
+  theme_minimal()+
+  theme(panel.background = element_rect(fill = "azure"))+
+  scale_fill_manual(values=c("black","white"))+
+  labs(size="MEM value", fill="MEM sign")
+map_mem
+```
+
+Moran's I test 
+```{r}
+mems_moran <-adespatial::moran.randtest(mem_sites, nrepet = 999, p.adjust.method = "holm") # 4 first are significant (positive eigenvalues)
+
+p1 <- data.frame(mems_moran$names,mems_moran$adj.pvalue,mems_moran$obs)%>%
+  ggplot(aes(x=reorder(mems_moran.names,-mems_moran.obs),y=mems_moran.adj.pvalue))+
+  geom_point()+
+  xlab("")+
+  ylab("P values")+
+  theme(axis.text.x = element_blank())+
+  geom_hline(yintercept = 0.05,color="darkorange2")
+p2 <-   data.frame(mems_moran$names,mems_moran$obs)%>%
+  ggplot(aes(x=reorder(mems_moran.names,-mems_moran.obs),y=mems_moran.obs))+
+  geom_point()+
+  xlab("")+
+  ylab("Moran's I")+
+  theme(axis.text.x = element_text(angle = 45,vjust=1,hjust=1))
+p1/p2
+```
+
+Select significant mems and add them to data
+```{r}
+meco_16s$sample_table <- cbind(meco_16s$sample_table,mem_sites[,1:11])
+```
+
+
+# D -  Save cleaned datasets
+
+```{r}
+# save.image(file='outputs/preproc_myenv.RData')
+save(meco_16s,file = "processed_data/meco_16s.RData")
+write.csv(meco_16s$sample_table,file = "processed_data/sample_table.csv")
+```
+
+# -----------------------------------
+# -----------------------------------
+# -----------------------------------
+
+#I- Alpha-div
+
+
+## Rarefaction curve and richness
+```{r}
+tab16s <- t(phyloseq::otu_table(file2meco::meco2phyloseq(meco_16s))) # get the community
+class(tab16s) <- "matrix" # change class
+curve16s <- vegan::rarecurve(tab16s,step=100) # use vegan rarefaction curves
+names(curve16s) <- rownames(tab16s) # name curves after sample IDs
+
+# Coerce data into "long" form.
+protox <- mapply(FUN = function(x, y) {
+  mydf <- as.data.frame(x)
+  colnames(mydf) <- "value"
+  mydf$samples <- y
+  mydf$subsample <- attr(x, "Subsample")
+  mydf
+}, x = curve16s, y = as.list(names(curve16s)), SIMPLIFY = FALSE)
+
+
+xy <- do.call(rbind, protox)
+rownames(xy) <- NULL  # pretty
+xy%<>%
+  mutate(Sample=samples)%>%
+  left_join(meco_16s$sample_table)
+
+
+rare16s <- ggplot(xy, aes(x = subsample, y = value, group = samples ,color=koppen_clim)) +
+  ggpubr::theme_classic2() +
+  geom_line()+
+  xlab("Nb reads")+
+  ylab("ASVs count")+
+  scale_color_manual(values = paletteer::paletteer_d("MetBrewer::Austria"),name="Climatic zone")+
+  theme(text = element_text(face="bold"))
+
+
+richness_plot <- ggplot(dtmp,aes(x=koppen_clim,y=nb_asvs,color=koppen_clim))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_jitter()+
+  ggpubr::theme_classic2()+
+  labs(y="Nb ASVs")+
+  scale_color_manual(values = climate_palette,name="Climatic zone")+
+  theme(axis.text.x = element_text(angle=45,vjust=1,hjust=1),
+        axis.title.x = element_blank(),
+        text = element_text(face="bold"))
+```
+
+## Bacterial cell abundance
+
+```{r}
+cyto_plot <-  meco_16s$sample_table%>%
+  ggplot(aes(x=koppen_clim,y=bacg ,color=koppen_clim))+
+  geom_boxplot(outlier.shape = NA)+ #remove outliers shape because they'll be plotted with jitter
+  geom_jitter()+ # plot points over boxplots
+  ggpubr::theme_classic2()+
+  scale_color_manual(values = climate_palette,name="Climatic zone")+
+  scale_y_log10()+
+  ylab(bquote(bold("Bacterial abundance (cell.g"^-2~")")))+
+  theme(text=element_text(face="bold"),
+        axis.text.x = element_text(angle = 45,hjust=1),
+        axis.title.x = element_blank())
+```
+
+## Relative abundance~Prevalence
+
+Compute average non null relative abundance for each ASVs
+```{r}
+asv_meanrelab <- 
+  meco_16$otu_table%>%
+  mutate(across(everything(),.fns=~(.x/sum(.))*100))%>% #convert to relative abundance
+  mutate(ASV_id=rownames(.))%>% #get asv id
+  reshape2::melt()%>% #convert to long form
+  filter(value!=0)%>% #remove relative abundance of 0 (ASVs not present in samples)
+  group_by(ASV_id)%>% #group by asvs
+  summarise(mean_relab=mean(value)) # compute mean (non null) relative abundance
+
+#add to tax_table info
+meco_16$tax_table%<>%
+  left_join(asv_meanrelab)
+
+rm(asv_meanrelab)
+```
+
+
+ASV relab~ASV prevalence, top 10 Genera (total read numbers) are colored.
+```{r}
+# Get top 10 genera
+tab <- meco_16s$otu_table 
+tax.lvl <- "Genus"
+genus_tot <-agg.table.taxo(tab = tab, # aggregate my data at the targeted tax level
+                           tax.lvl = tax.lvl,
+                           tax.table = meco_16s$tax_table) %>%
+  apply(1,sum) %>% # sum the number of reads
+  sort %>% # sort in ascending order
+  identity
+top_genus <- genus_tot%>%
+  tail(10)
+
+# data 2 plot
+p_data <-  meco_16s$tax_table%>%
+  mutate(prev=rowSums(meco_16s$otu_table>0))%>% #compute prevalence
+  mutate(prevpct=(prev/171)*100)%>% #convert to pct
+  mutate(prev_category=cut(prevpct, breaks=c(-Inf,5,10,25, 50, 75, Inf),
+                           labels=c("<5","<10","<25","<50","<75","75<")))%>%#split in categories 
+  mutate(Genus_agg=factor(ifelse(Genus%in%top_genus$genus,Genus,
+                                 ifelse(is.na(Genus),"Unidentified","Others"))))%>%
+  mutate(Genus_agg=forcats::fct_relevel("Others", after = Inf))%>%
+  mutate(Genus_agg=forcats::fct_relevel("Unidentified", after = Inf))
+
+# create data for plot background
+p_data_rect <- data.frame(xmin=c(0,5,10,25,50,75), 
+                          xmax=c(5,10,25,50,75,100),
+                          ymin=rep(0,6),
+                          ymax=rep(100,6),
+                          prev_category=factor(c("<5","<10","<25","<50","<75","75<"),
+                                               levels = c("<5","<10","<25","<50","<75","75<")))
+
+colorz <-  c(paletteer::paletteer_d("ggthemes::Classic_10"),"lightgrey","#666666")
+names(colorz) <-rev(levels(p_data$genus_agg))
+
+#create data for plot annotation
+annot_data <- p_data %>% 
+  group_by(prev_category)%>%
+  summarise(effe=n()) # Number of ASVs in each prevalence category
+
+#build the plot
+relab_prev_genus <- 
+  ggplot()+
+  #background
+  geom_rect(p_data_rect,mapping=aes(xmin=xmin,xmax=xmax,ymin=ymin,ymax=ymax,fill=prev_category),alpha=.7)+
+  #point for ASVs not in top 10 genera 
+  geom_point(filter(p_data,Genus_agg%in%c("Others","Unidentified")),mapping=aes(prevpct,100*(mean_relab),color=Genus_agg),alpha=.5)+
+  #point for top 10 genera ASVs 
+  geom_point(filter(p_data,!Genus_agg%in%c("Others","Unidentified")),mapping=aes(prevpct,100*(mean_relab),color=Genus_agg),alpha=1,size=2)+
+  #labels of prev categories
+  ggtext::geom_richtext(annot_data,mapping=aes(x =rowMeans(cbind(c(0,5,10,25,50,75), c(5,10,25,50,75,100))),y=90,
+                                               label=paste0("n=",effe),
+                                               fill=prev_category),
+                        alpha=.9,angle=45,size=2,show.legend = FALSE)+ 
+  #color scale
+  scale_color_manual(values = colorz,name="Genus")+ #points
+  scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="OTUs prevalence")+#background
+  guides(fill="none")+ #don't show in legend
+  #log relative abundance
+  scale_y_log10(limits=c(0.005,100),breaks=c(.01,.1,1,10))+
+  #name axes and set theme
+  ylab("Mean relative abundance (%)")+
+  xlab("OTU prevalence (%)")+
+  ggpubr::theme_classic2()+
+  scale_x_continuous(expand = c(0.01,0),breaks = c(0,5,10,25, 50, 75,100))+
+  theme(text = element_text(face="bold"))
+```
+
+
+```{r}
+df <- meco_16s$otu_table%>% # get otu table
+  mutate(across(everything(),.fns=~(.x/sum(.))*100))%>% #convert to relative abundance
+  mutate(ASV_id=rownames(.))%>%
+  reshape2::melt()%>%
+  left_join(mutate(p_data,ASV_id=rownames(p_data)))%>% # add taxonomy info
+  left_join(mutate(meco_16s$sample_table,variable=Sample))%>% # add sample info
+  arrange(koppen_clim)%>%
+  mutate(variable=forcats::fct_inorder(variable))
+
+p_relab <- (df%>%
+  ggplot(aes(x=variable,y=value,fill=prev_category))+
+  geom_bar(stat="identity",width=1)+
+  scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="OTUs prevalence (%)")+
+  ggpubr::theme_classic2()+
+  scale_y_continuous(expand=c(0,0))+
+  theme(text=element_text(face="bold"),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank())+
+  ylab("Relative abundance (%)")+
+  df%>%
+  ggplot(aes(y=1,x=variable,fill=koppen_clim))+
+  geom_tile()+
+  theme_void()+
+  theme(legend.position = "none")+
+  scale_fill_manual(values = climate_palette,name="Climatic zone"))+
+  plot_layout(height=c(9,1),guides="collect")
+```
+
+## Upset plot
+
+```{r}
+data_tmp <- clone(meco_16s) #copy dataset
+merged_tmp <-  data_tmp$merge_samples(use_group = "koppen_clim") # merge by climate zone
+t1 <- trans_venn$new(dataset = merged_tmp) # create intersection
+
+# extract data for plotting
+self <- t1
+colnumber <- self$colnumber
+ratio <- self$ratio
+res_names <- self$res_names
+switch_num <- colnumber - 1
+summary_table <- self$data_summary
+name_joint <- self$name_joint
+samplesum <- self$data_samplesum
+
+sample_levels <- res_names %>% rev
+
+
+# Top bar plot
+
+## prep data
+plot_data <- summary_table %>% tibble::rownames_to_column() %>% .[order(.$Counts,decreasing = TRUE), ]
+tot_counts <- plot_data$Counts%>%sum
+tot_ab <- plot_data$Abundance%>%sum
+most_ab <- max(plot_data$Abundance)
+
+plot_data%<>%filter(Counts!=0)
+plot_data %<>% mutate(cumab=cumsum(Abundance))
+plot_data%<>%mutate(intersect=rowname)
+plot_data%<>%mutate(cumrelab=(cumab/tot_ab)*100)
+plot_data%<>%mutate(relab=(Abundance/tot_ab)*100)
+
+plot_data %<>%
+  mutate(rowname=factor(rowname,levels=rowname))
+
+## plot it
+g1 <- ggplot(plot_data, aes(x = rowname, y = Counts)) + 
+  theme_classic() + geom_col(color = "black", fill = "grey35",width=.5) + 
+  ylab("Intersection size") + theme(axis.title.x = element_blank(), 
+                                    axis.text.x = element_blank(),
+                                    axis.ticks.x = element_blank()) + 
+  theme(axis.text = element_text(size = 8), 
+        axis.title = element_text(size = 10))+
+  scale_y_continuous(expand = c(0,0),limits = c(0,5500))+
+  annotate(geom = "text",
+           x=plot_data$rowname,
+           y=plot_data$Counts+((.05)*max(plot_data$Counts)),
+           label=paste0(round(plot_data$relab,digits = 2),"%"),
+           color=c("black","black","black","darkorange","black","black","black"),hjust=.5)
+
+
+# Middle plot
+
+## get data
+matrix_data <- matrix(nrow = colnumber, ncol = nrow(plot_data)) %>% 
+  as.data.frame
+rownames(matrix_data) <- sample_levels
+colnames(matrix_data) <- plot_data[, 1]
+for (i in colnames(matrix_data)) {
+  tmp <- strsplit(i, name_joint, fixed = TRUE) %>% unlist
+  for (j in rownames(matrix_data)) {
+    if (j %in% tmp) {
+      matrix_data[j, i] <- 1
+    }
+  }
+}
+sample_long <- matrix_data %>% tibble::rownames_to_column() %>% reshape2::melt(., id.vars = "rowname")
+sample_long$variable %<>% factor(., levels = levels(plot_data[,1]))
+sample_long$rowname %<>% factor(levels = sample_levels)
+sample_ture <- sample_long[!is.na(sample_long$value), ]
+sample_all <- sample_long
+sample_all$value <- 1
+
+## Create plot
+
+#Empty plot
+g2 <- ggplot(sample_long, aes(x = variable, y = rowname))
+
+# Temperate row
+g2 <- g2 + geom_rect(ymin = 3-0.5, ymax = 3+0.5,
+                     xmin = -Inf, xmax = Inf, 
+                     fill = "#6EB689", 
+                     colour =  NA) 
+# Cold continental
+g2 <- g2 + geom_rect(ymin = 2-0.5, ymax = 2+0.5,
+                     xmin = -Inf, xmax = Inf,
+                     fill = "#7C8AB5", 
+                     colour =  NA)
+# Hot continental
+g2 <- g2 + geom_rect(ymin = 1-0.5, ymax = 1+0.5,
+                     xmin = -Inf, xmax = Inf,
+                     fill = "#C45858", 
+                     colour =  NA)
+
+# add dots
+g2 <- g2 +
+  geom_point(data = sample_all, aes(x = variable, y = rowname), 
+             size = 3, color = "white", inherit.aes = FALSE) + 
+  geom_point(data = sample_ture,aes(x = variable, y = rowname), 
+             size = 3, color = "black", inherit.aes = FALSE) + 
+  theme_bw() +
+  theme(legend.position = "none") + 
+  theme(axis.title = element_blank(), axis.text.x = element_blank(), 
+        axis.ticks = element_blank()) +
+  theme(axis.text = element_text(size = 10)) + 
+  theme(panel.border = element_blank()) +
+  theme(panel.grid = element_blank())+
+  scale_y_discrete(position = 'right')
+
+#line data
+line_data <- matrix_data
+line_data[] <- lapply(line_data, function(x) {
+  x <- 1:length(x)
+  x
+})
+line_data[is.na(matrix_data)] <- NA
+line_data2 <- data.frame(y = apply(line_data, 2, min, na.rm = TRUE), 
+                         yend = apply(line_data, 2, max, na.rm = TRUE), x = 1:ncol(line_data), 
+                         xend = 1:ncol(line_data))
+
+# add line data
+g2 <- g2 + geom_segment(aes(x = x, y = y, xend = xend, yend = yend), 
+                        data = line_data2,
+                        color="black")
+
+#left barplot
+## get data
+g3_data <- data.frame(number = samplesum, rowname = names(samplesum))
+g3_data$rowname %<>% factor(levels = sample_levels)
+g3_data <- meco_16s$sample_table%>%
+  group_by(koppen_clim)%>%
+  summarise(n=n())%>%
+  mutate(rowname=gsub("&","-",koppen_clim))%>%
+  left_join(g3_data)%>%
+  mutate(rowname=forcats::fct_relevel(rowname,levels(sample_long$rowname)))
+
+##build plot
+g3 <- ggplot(g3_data, aes(x = number, y = rowname))
+
+# Temperate row
+g3 <- g3 + geom_rect(ymin = 3-0.5, ymax = 3+0.5,
+                     xmin = -Inf, xmax = Inf, 
+                     fill = "#6EB689", 
+                     colour =  NA) 
+# Cold continental
+g3 <- g3 + geom_rect(ymin = 2-0.5, ymax = 2+0.5,
+                     xmin = -Inf, xmax = Inf,
+                     fill = "#7C8AB5", 
+                     colour =  NA)
+# Hot continental
+g3 <- g3 + geom_rect(ymin = 1-0.5, ymax = 1+0.5,
+                     xmin = -Inf, xmax = Inf,
+                     fill = "#C45858", 
+                     colour =  NA)
+
+g3 <-g3 +
+  geom_col(color = "black", fill = "grey35",width = .5) + 
+  theme_bw() +
+  theme(legend.position = "none") +
+  scale_x_reverse(limits=c(max(g3_data$number)*1.1,0),expand=c(0,0)) +  
+  theme(axis.title = element_blank(), 
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) +
+  theme(axis.text = element_text(size = 8)) + 
+  theme(panel.border = element_blank()) + 
+  theme(panel.grid = element_blank())+
+  annotate(geom = "text",x=g3_data$number+(-.2*min(g3_data$number)),y=g3_data$rowname,label=paste0(g3_data$n," sites"),color="white",hjust=0)
+
+#define patchwork layout
+layout <- "
+#BBB
+ACCC
+"
+#combine plot
+upset_plot <- g3+g1+g2+plot_layout(design = layout)&theme(text = element_text(face="bold"))
+```
+
+
+## MetacodeR tree
+
+```{r}
+# format to metacodeR data
+mtcdR <- meco_16s$tax_table%>%
+  mutate(Kingdom=paste0("k__",Kingdom))%>%
+  mutate(Phylum=paste0("p__",Phylum))%>%
+  mutate(Class=paste0("c__",Class))%>%
+  mutate(Order=paste0("o__",Order))%>%
+  mutate(Family=paste0("f__",Family))%>%
+  mutate(Genus=paste0("g__",Genus))%>%
+  unite(lineage,Kingdom,Phylum,Class,Order,Family,Genus,sep = ";")%>%
+  select(ASV_id,lineage)%>%
+  mutate(lineage=gsub(";[a-z]__NA.*","",lineage))%>%
+  left_join(mutate(meco_16s$otu_table,ASV_id=rownames(meco_16s$otu_table)))
+
+# convert to metacoder obj
+obj <- metacoder::parse_tax_data(mtcdR,
+                      class_cols = "lineage", # the column that contains taxonomic information
+                      class_sep = ";", # The character used to separate taxa in the classification
+                      class_regex = "^(.+)__(.+)$", # Regex identifying where the data for each taxon is
+                      class_key = c(tax_rank = "taxon_rank", # A key describing each regex capture group
+                                    tax_name = "taxon_name"))
+```
+
+Compte info to plot
+```{r}
+## compute abundance of taxon
+obj$data$tax_abund <- metacoder::calc_taxon_abund(obj, "tax_data",cols = meco_16s$sample_table$Sample)
+
+## compute prevalence of taxon
+obj$data$tax_occ <- metacoder::calc_n_samples(obj, "tax_abund", cols = meco_16s$sample_table$Sample)
+
+## get total abundance per taxon and reads proportion
+obj$data$tax_abund%<>%
+  mutate(.after = 1,allreads=rowSums(across(where((is.numeric)))))%>%
+  left_join(obj$data$class_data[,c("taxon_id","tax_rank","tax_name")])%>%
+  distinct()%>%
+  group_by(tax_rank)%>%
+  mutate(prop_reads=(allreads/sum(allreads))*100)
+
+## tag as taxo to label if >75% prevalence and >2.5% of total reads
+taxa_to_label <- obj$taxon_names()[which(obj$data$tax_occ$n_samples>(171*.75)&obj$data$tax_abund$prop_reads>2.5)]
+to_label <- unlist(metacoder::supertaxa(obj, include_input = TRUE)[metacoder::taxon_names(obj) %in% taxa_to_label])
+
+#set colors of labels according to taxo rank
+colorz_rank <- c("#1C1FB5","#3030E6","#6161EE","#8888F2","#CACAFA","#F1F1FF")
+
+obj$data$class_data%<>%
+  mutate(rank_number=as.numeric(factor(tax_rank,levels=c("k","p","o","c","f","g"))))%>%
+  mutate(col_rank= colorz_rank[rank_number]))
+```
+
+Plot metacodeR tree branch colored with prevalence
+```{r}
+## Plot taxonomic tree
+set.seed(3) 
+
+taxo_structree <- heat_tree(obj, 
+          node_label_color=col_rank,
+          node_label_alpha=1,
+          node_label_box_fill="grey",
+          node_label_box_color="black",
+          node_label_box_alpha=.8,
+          node_size=n_obs,
+          edge_color_axis_label = "Prevalence",
+          node_size_axis_label = "Number of ASVs",
+          node_label = ifelse(taxon_indexes %in% to_label, taxon_names, ''),
+          edge_color_range = paletteer::paletteer_d("rcartocolor::Geyser")[c(1,2,3,5,6,7)],
+          edge_color=n_samples,
+          node_label_size_range=c(.025,.025),
+          initial_layout = "re", layout = "da",
+          make_node_legend = FALSE)+
+          theme_void()
+```
+
+Plot metacodeR with branch colored in RGB according to climate zones
+```{r}
+metadf_RGB <- obj$data$tax_abund%>%
+  reshape2::melt(id.vars=c("taxon_id","allreads","prop_reads","tax_rank","tax_name"))%>%
+  rename(Sample=variable)%>%
+  left_join(mutate(select(meco_16s$sample_table,Sample,koppen_clim),
+                   Sample=Sampl)))%>%
+  group_by(taxon_id,koppen_clim)%>%
+  summarise(tot_reads=sum(value))%>%
+  ungroup()%>%
+  pivot_wider(names_from = koppen_clim,values_from = tot_reads)%>%
+  left_join(obj$data$tax_abund)%>%
+  group_by(taxon_id)%>%
+  mutate(R=`Continental hot summer`/sum(allreads),
+         G=Temperate/sum(allreads),
+         B=`Continental cold/Tundra`/sum(allreads))%>%
+  mutate(rgb_col=rgb(R,G,B,maxColorValue = 1))
+
+
+obj$data$tax_occ%<>%
+  select(1:2)%>%
+  left_join(metadf_RGB[,c("taxon_id","Continental cold/Tundra","Continental hot summer","Temperate","allreads" ,"tax_rank","tax_name","prop_reads","rgb_col","R","G","B")])
+
+heat_treergb <- heat_tree(obj, 
+          node_label_color=col_rank,
+          node_label_alpha=1,
+          node_label_box_fill="grey75",
+          node_label_box_color="black",
+          node_label_box_alpha=.8,
+          node_size=n_obs,
+          edge_color_axis_label = "Prevalence",
+          node_size_axis_label = "Number of ASVs",
+          node_label = ifelse(taxon_indexes %in% to_label, taxon_names, ''),
+          edge_color=rgb_col,
+          node_label_size_range=c(.025,.025),
+          initial_layout = "re", layout = "da",
+          make_edge_legend = FALSE,
+          make_node_legend = FALSE)
+
+library(ggtern)
+leg <- ggtern(all.colors, aes(x = B, y = R, z = G)) +
+  geom_point(aes(color = hex), size = 3, shape = 17) +
+  scale_color_identity() +
+  theme_rgbw(14) +
+  scale_L_continuous(breaks = NULL,name = "CH") +
+  scale_T_continuous(breaks = NULL,name = "CC") +
+  scale_R_continuous(breaks = NULL,name = "T") +
+  theme(
+    tern.panel.expand = 0.4,
+    tern.axis.arrow=element_blank(),
+    tern.axis.text.R = element_text(color = "darkgreen",face="bold",size = .25), 
+    tern.axis.text.T = element_text(color = "darkred",face="bold",size = .25),
+    tern.axis.text.L = element_text(color = "darkblue",face="bold",size = .25))
+
+heat_treergb <- heat_treergb+
+  guides(custom = guide_custom(title = "Relative Share", grob = ggplotGrob(leg),
+                               width = grid::unit(10, "lines"),
+                               height = grid::unit(10, "lines")))+
+  theme(aspect.ratio = 1,
+        legend.title = element_text(hjust = 0.5, vjust = -3,face = "bold"),
+        legend.margin = margin(0,0,0,0, unit = "lines"),
+        legend.position = c(0.9, 0.85),
+        legend.background = element_blank())
+
+heat_treergb
+```
+
+```{r}
+devtool::unload("ggtern")
+```
+
+#II- Beta-div
+
+## Composition plots
+
+Plot taxa relative abundance overall (donut) and per sample (bar) at different taxonomic rank.
+```{r}
+bar_list <- NULL
+donut_list <- NULL
+for( i in c("Phylum","Class","Order","Family","Genus")){
+  
+  tmp16s <- microeco::clone(meco_16s) # get data
+  tmp16s$sample_table %<>%
+    arrange(koppen_clim,Y)%>% # arrange sample per climate zone and latitude
+    mutate(Sample=as.factor(Sample))%>%
+    mutate(Sample=forcats::fct_inorder(Sample)) # set factor
+ 
+  tmp16s$sample_table %<>% mutate(dumb_group = "studywide") # add a dummy variable to collapse all samples
+  rownames(tmp16s$sample_table) <- tmp16s$sample_table$Sample
+  tmp16s$tidy_dataset()
+  tmp16s$cal_abund() #compute relative abundance
+  
+  #donut plot
+  tmp16s1 <- trans_abund$new(tmp16s,taxrank = i,ntaxa = 10,groupmean = "dumb_group") #merge all samples
+  
+  ## get data
+  plot_data1 <- tmp16s1$data_abund
+  use_taxanames <- tmp16s1$data_taxanames # get the taxanames of top taxa
+  
+  if("NA"%in%use_taxanames){ # NA = unidentified, remove it from use_taxanames
+    use_taxanames <-  use_taxanames[-which(use_taxanames=="NA")] 
+  }
+  plot_data1%<>%
+    mutate(Taxonomy=ifelse(Taxonomy=="NA","Unidentified",Taxonomy)) # set NA as unidentified
+  # set all tax not in "use_taxanames" or "unidentified" as "others" 
+  plot_data1$Taxonomy[!plot_data1$Taxonomy %in% c(use_taxanames,"Unidentified")] <- "Others" 
+  
+  #sum abundance by taxon
+  plot_data1 %<>% 
+    dplyr::group_by(!!!syms(c("Taxonomy","Sample"))) %>% 
+    dplyr::summarise(Abundance = sum(Abundance)) %>% 
+    as.data.frame(stringsAsFactors = FALSE)
+  #factor relevel
+  plot_data1$Taxonomy %<>% factor(., levels = c(use_taxanames, "Others","Unidentified"))
+  plot_data1$label <- paste0(round(plot_data1$Abundance, 1),"%")
+  
+  if(i=="Genus"){ # gat a specific color palette for genera 
+    colorz <-  c(paletteer::paletteer_d("ggthemes::Classic_10"),"lightgrey","#666666")
+    names(colorz) <-rev(levels(p_data$genus_agg))
+  }else{
+    colorz <- c(paletteer::paletteer_d("MoMAColors::Klein")[1:10],"lightgrey","#666666") #paletteer_d("ggthemes::Miller_Stone")
+  }
+  names(colorz) <- levels(plot_data1$Taxonomy )
+  colorz[which(names(colorz)=="Unidentified")] <- "#666666"
+  colorz[which(names(colorz)=="Others")] <- "lightgrey"
+  
+  # plot donut chart
+  donut_comp <- ggpubr::ggdonutchart(plot_data1,"Abundance",
+                                     fill="Taxonomy",
+                             label = "label",
+                             color = "white",
+                             palette = colorz ,
+                             guide = guide_legend(reverse = TRUE) )+
+    theme(text=element_text(face="bold"),
+          legend.position = "n")
+  
+  # Now bar plot (samples aren't aggregated)
+  tmp16s2 <- trans_abund$new(tmp16s,taxrank = i,ntaxa = 8)
+  plot_data2 <- tmp16s2$data_abund
+  plot_data2%<>%
+    mutate(Taxonomy=ifelse(Taxonomy=="NA","Unidentified",Taxonomy))
+  plot_data2$Taxonomy[!plot_data2$Taxonomy %in% c(use_taxanames,"Unidentified")] <- "Others"
+  plot_data2$Taxonomy %<>% factor(., levels = rev(c(use_taxanames, "Others","Unidentified")))
+
+  bar_comp <- plot_data2%>%
+    arrange(koppen_clim,Y)%>% # arrange sample per climate zone and latitude
+    mutate(Sample=as.factor(Sample))%>%
+    mutate(Sample=forcats::fct_inorder(Sample))%>%
+    group_by(Sample,Taxonomy)%>%
+    summarise(Abundance=sum(Abundance))%>%
+    mutate(Abundance=(Abundance/sum(Abundance))*100)%>%
+    ggplot(aes(x=Sample,y=Abundance,fill=Taxonomy),color=NA)+
+    geom_bar(stat = "identity",width=1,position='stack',key_glyph="rect")+
+    scale_fill_manual(values =  colorz,
+                      guide = guide_legend(reverse = TRUE),
+                      name=i)+
+    scale_y_continuous(expand = c(0,0),breaks = c(0,25,50,75,100))+
+    ylab("Relative abundance (%)")+
+    theme(text=element_text(face="bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          plot.margin = margin(0,0,0,0))+ 
+    tmp16s$sample_table%>%
+    ggplot(aes(x=Sample,y=1,fill=koppen_clim))+
+    geom_tile()+
+    scale_fill_manual(values = climate_palette,name="Climatic zone")+
+    theme_void()+
+    theme(text=element_text(face="bold"),
+          plot.margin = margin(0,0,0,0))+
+    plot_layout(heights = c(9,.5),guides = "collect")
+  
+  donut_list[[i]] <- donut_comp  & theme(plot.title = element_text(face='bold'))
+  bar_list[[i]] <- bar_comp & theme(plot.title = element_text(face='bold'))
+}
+```
+
+## PCOA
+
+```{r}
+#Custom fct to star plot
+StatCentSeg <- ggplot2::ggproto("StatCentSeg", Stat,
+                                compute_group = function(data, scales, params,
+                                                         cfun=median) {
+                                  data$xend <- cfun(data$x)
+                                  data$yend <- cfun(data$y)
+                                  return(data)
+                                },
+                                required_aes = c("x", "y")
+)
+stat_centseg <- function(mapping = NULL, data = NULL, geom = "segment",
+                         position = "identity", na.rm = FALSE, show.legend = NA, 
+                         inherit.aes = TRUE, cfun=median, ...) {
+  layer(
+    stat = StatCentSeg, data = data, mapping = mapping, geom = geom, 
+    position = position, show.legend = show.legend, inherit.aes = inherit.aes,
+    params = list(na.rm = na.rm, cfun = cfun, ...)
+  )
+}
+
+
+```
+
+Run the PCOA
+```{r}
+# run pcoa
+dtmp <- microeco::clone(meco_16s) #clone data
+dtmp$otu_table <- t(labdsv::hellinger(t(dtmp$otu_table)))  #perform hellinger transformation
+orditmp <- phyloseq::ordinate(file2meco::meco2phyloseq(dtmp), "PCoA", "horn") # run pcoa with Morisita-Horn distance
+
+# get relative eigenvalues (% variance associated to different axes)
+expl1 <- orditmp$values$Relative_eig[1] #axis1
+expl2 <- orditmp$values$Relative_eig[2] #axis2
+expl3 <- orditmp$values$Relative_eig[3] #axis3
+```
+
+Plot Sample PCOA
+```{r}
+# Extract sample coordinates on 3 first dimensions
+dim1 <- orditmp$vectors[,1]
+dim2 <- orditmp$vectors[,2]
+dim3 <- orditmp$vectors[,3]
+Sample <- names(orditmp$vectors[,1])
+meco_16s$sample_table%<>%
+  mutate(dim1=dim1,
+         dim2=dim2,
+         dim3=dim3)
+# create df and merge with sample info
+df_ordihorn <- data.frame(dim1,
+                          dim2,
+                          dim3,
+                          Sample)
+df_ordihorn%<>%left_join(meco_16s$sample_table)
+
+# plot Sample PCoA
+pcoa_horn <- ggplot(df_ordihorn,aes(x=dim1,y=dim2,color=koppen_clim))+
+  geom_point()+
+  theme_classic()+
+  ylab(paste0("Axis 2 (",round(expl2,digits = 3)*100,"%)"))+
+  xlab(paste0("Axis 1 (",round(expl1,digits = 3)*100,"%)"))+
+  ggConvexHull::geom_convexhull(aes(fill = koppen_clim, color = koppen_clim),alpha=0.2)+
+  geom_vline(xintercept=0,lty=2)+
+  geom_hline(yintercept=0,lty=2)+
+  scale_color_manual(values = climate_palette,name="Climatic zone")+
+  scale_fill_manual(values = climate_palette,name="Climatic zone")+
+  theme(text=element_text(face="bold"))
+
+pcoa_horn13 <- ggplot(df_ordihorn,aes(x=dim1,y=dim3,color=koppen_clim))+
+  geom_point()+
+  theme_classic()+
+  ylab(paste0("Axis 3 (",round(expl3,digits = 3)*100,"%)"))+
+  xlab(paste0("Axis 1 (",round(expl1,digits = 3)*100,"%)"))+
+  ggConvexHull::geom_convexhull(aes(fill = koppen_clim, color = koppen_clim),alpha=0.2)+
+  geom_vline(xintercept=0,lty=2)+
+  geom_hline(yintercept=0,lty=2)+
+  scale_color_manual(values = climate_palette,name="Climatic zone")+
+  scale_fill_manual(values = climate_palette,name="Climatic zone")+
+  theme(text=element_text(face="bold"))
+```
+
+Now plot taxa pcoa
+```{r}
+#get taxa coordinates for axes 1,2,3
+pordi_asv <-  phyloseq::plot_ordination(file2meco::meco2phyloseq(dtmp), orditmp,type = "taxa",axes = c(1,2))
+pordi_asv2 <-  phyloseq::plot_ordination(file2meco::meco2phyloseq(dtmp), orditmp,type = "taxa",axes = c(1,3))
+
+#create dataframe
+df <- pordi_asv$data%>%
+  mutate(nb_reads=rowSums(meco_16s$otu_table))%>% #compute number of reads
+  arrange(prev)%>% #order by prevalence
+  mutate(ASV_id=forcats::fct_inorder(ASV_id))%>% #level factor
+  left_join(select(pordi_asv2$data,c(2,3)))%>% #add axis 3
+  group_by(Class)%>% # groupby class
+  mutate(maxprev=max(prev), # prevalence of the most prevalent ASV
+         propreads=sum(nb_reads)/sum(meco_16s$otu_table), # proportion of total reads
+         medx=median(Axis.1), #median of the coordinates
+         medy=median(Axis.2),
+         medy3=median(Axis.3))%>%
+  ungroup()%>%
+  mutate(class2plot=ifelse(Class%in%donut_list$Class$data$Taxonomy[-c(1:2)],Class,"Others"))%>% # Keep only class that we want and tag the rest as "Others"
+  mutate(is2plot=ifelse(Class%in%donut_list$Class$data$Taxonomy[-c(1:2)],'yup',"nope"))%>% # Create variable saying if to plot or "others"
+  mutate(class2plot=forcats::fct_relevel(class2plot,"Others"))%>% #place Others as first factor
+  arrange(class2plot) # arrange so that the dots are drawn in right order
+
+#Plot
+#Axis 1&2
+pcoatax_starplot <- 
+  ggplot(df)+
+  #Star plot
+  stat_centseg(df, mapping=aes(Axis.1,Axis.2,color=class2plot,fill=Class), #dummy fill arg to get proper grouping
+               alpha=.5)+
+  scale_fill_manual(values=rep("black", 30), guide = "none")+ #dummy sale fill
+  # add point corresponding to class median position
+  geom_point(df,mapping=aes(medx,medy,
+                            color=class2plot, #color class (10 top classes - others in black)
+                            size=is2plot), #bigger size for top 10 classes
+             alpha=.5,shape=21,fill="white",key_glyph=draw_key_point, stroke = 1)+
+  # palettes
+  scale_color_manual(values=rev(c(paletteer_d("MoMAColors::Klein")[1:10],"black")),name="Class")+
+  scale_size_manual(values=c(2,4),guide = 'none')+ 
+  guides(color = guide_legend(override.aes = list(alpha = 1,
+                                                  fill=rev(c(paletteer_d("MoMAColors::Klein")[1:10],"black")))))+
+  # add lines and axis names
+  geom_vline(xintercept=0,lty=2)+
+  geom_hline(yintercept=0,lty=2)+
+  ylab(paste0("Axis 2 (",round(expl2*100,digits = 2),"%)"))+
+  xlab(paste0("Axis 1 (",round(expl1*100,digits = 2),"%)"))+
+  # set theme
+  theme_bw()+
+  theme(text=element_text(face="bold"),
+        panel.grid = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank())
+
+#Axis 1&3
+pcoatax_starplot13 <- 
+ ggplot(df)+
+  #Star plot
+  stat_centseg(df, mapping=aes(Axis.1,Axis.3,color=class2plot,fill=Class), #dummy fill arg to get proper grouping
+               alpha=.5)+
+  scale_fill_manual(values=rep("black", 30), guide = "none")+ #dummy sale fill
+  # add point corresponding to class median position
+  geom_point(df,mapping=aes(medx,medy3,
+                            color=class2plot, #color class (10 top classes - others in black)
+                            size=is2plot), #bigger size for top 10 classes
+             alpha=.5,shape=21,fill="white",key_glyph=draw_key_point, stroke = 1)+
+  # palettes
+  scale_color_manual(values=rev(c(paletteer_d("MoMAColors::Klein")[1:10],"black")),name="Class")+
+  scale_size_manual(values=c(2,4),guide = 'none')+ 
+  guides(color = guide_legend(override.aes = list(alpha = 1,
+                                                  fill=rev(c(paletteer_d("MoMAColors::Klein")[1:10],"black")))))+
+  # add lines and axis names
+  geom_vline(xintercept=0,lty=2)+
+  geom_hline(yintercept=0,lty=2)+
+  ylab(paste0("Axis 3 (",round(expl3*100,digits = 2),"%)"))+
+  xlab(paste0("Axis 1 (",round(expl1*100,digits = 2),"%)"))+
+  # set theme
+  theme_bw()+
+  theme(text=element_text(face="bold"),
+        panel.grid = element_blank())
+
+
+# Axis bxplot
+axis1 <- df%>%
+  filter(class2plot!="Others")%>% # remove "others" classes as grouping them makes no sens
+  arrange(mean_relab,prev)%>% # arrange by mean relab so that ASVs with high mean relabs are plotted last
+  ggplot(aes(y=class2plot,x=Axis.1,fill=class2plot))+ #plot coordinates according to classes
+  geom_boxplot(outlier.shape = NA)+
+  geom_point(position = position_jitter(width = 0,height = .1), #no width jitter to keep coordinates correspondance
+             aes(color=as.numeric(mean_relab),size=as.numeric(prev)),#color according to meanrelab and size =prev
+             alpha=.8)+
+  scale_fill_manual(values=rev(paletteer_d("MoMAColors::Klein")[1:10]),name="Class",guide="none")+
+  scale_color_gradientn(colors = paletteer::paletteer_d("MoMAColors::Exter"),name="Mean relative abundance (%)")+
+  scale_size_continuous(name="Prevalence",range = c(1,4))+
+  #set lims exactly as those of pcoa
+  xlim(layer_scales(pcoatax_starplot)$x$range$range)+
+  #set theme
+  theme_bw()+
+  theme(text=element_text(face="bold"),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid = element_blank())+
+  geom_vline(xintercept=0,lty=2)
+
+
+axis2 <- df%>%
+  filter(class2plot!="Others")%>%
+  arrange(mean_relab,prev)%>% # arrange by mean relab so that ASVs with high mean relabs are plotted last
+  ggplot(aes(class2plot,Axis.2,fill=class2plot))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_point(position = position_jitter(width = .1,height = 0), # JITTER IN WIDTH!!
+             aes(color=as.numeric(mean_relab),size=as.numeric(prev)),
+             alpha=.8)+
+  theme_bw()+
+  scale_fill_manual(values=rev(paletteer_d("MoMAColors::Klein")[1:10]),name="Class",guide="none")+
+  scale_color_gradientn(colors = paletteer::paletteer_d("MoMAColors::Exter"),name="Mean relative abundance (%)")+
+  ylim(layer_scales(pcoatax_starplot)$y$range$range)+
+  scale_size_continuous(name="Prevalence",range = c(1,4))+
+  theme(text=element_text(face="bold"),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.grid = element_blank())+
+  geom_hline(yintercept=0,lty=2)
+
+axis3 <- df%>%
+  filter(class2plot!="Others")%>%
+  arrange(mean_relab,prev)%>% # arrange by mean relab so that ASVs with high mean relabs are plotted last
+  ggplot(aes(class2plot,Axis.3,fill=class2plot))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_point(position = position_jitter(width = .1,height = 0),aes(color=as.numeric(mean_relab),size=as.numeric(prev)),alpha=.8)+
+  theme_bw()+
+  scale_fill_manual(values=rev(paletteer_d("MoMAColors::Klein")[1:10]),name="Class",guide="none")+
+  scale_color_gradientn(colors = paletteer::paletteer_d("MoMAColors::Exter"),name="Mean relative abundance (%)")+
+  ylim(layer_scales(pcoatax_starplot13)$y$range$range)+
+  scale_size_continuous(name="Prevalence",range = c(1,4))+
+  theme(text=element_text(face="bold"),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.grid = element_blank())+
+  geom_hline(yintercept=0,lty=2)
+
+#compose plot
+pcoataxfull <- (axis1+plot_spacer()+pcoatax_starplot+axis2+pcoatax_starplot13+axis3)+
+  #set layout
+  plot_layout(guides="collect",heights=c(3,4,4),widths = c(4,3))&
+  # set theme
+  theme(plot.margin = unit(c(0, 0, 0, 0), "null"),
+        panel.spacing = unit(c(0, 0, 0, 0), "null"),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        legend.background = element_blank())
+
+pcoataxfull
+```
+
+## Variance Partitioning
+
+```{r}
+dvpcom <- t(meco_16s$otu_table)%>%
+  data.frame()%>%
+  mutate(Sample=gsub("MAPP_","",rownames(.)))%>%
+  arrange(Sample)%>%
+  mutate(Sample=forcats::fct_inorder(Sample))
+
+dvpenv <- meco_16s$sample_table[,c("Sample","ph",var_lt,"height")]%>%
+  arrange(Sample)%>%
+  mutate(Sample=forcats::fct_inorder(Sample))
+
+dvpmems <- - meco_16s$sample_table%>%
+  select(c(Sample,starts_with("MEM")))%>%
+  arrange(Sample)%>%
+  mutate(Sample=forcats::fct_inorder(Sample))
+
+vp_veg <- vegan::varpart(select(dvpcom,-Sample),select(dvpenv,-Sample),select(dvpmems,-Sample))
+plot(vp_veg)
+```
+
+
+```{r}
+dvp_bar <- data.frame(var=c("Satellite data",
+                            "MEMs",
+                            "Unexplained"),
+                      explpct=c(vp_veg$part$indfract$Adj.R.squared[1],
+                                vp_veg$part$indfract$Adj.R.squared[2],
+                                1-(vp_veg$part$indfract$Adj.R.squared[1]+
+                                     vp_veg$part$indfract$Adj.R.squared[2])))
+
+pvp_bar <- 
+dvp_bar%>%
+  ggplot(aes(x=1,y=explpct,fill=var))+
+  geom_bar(stat = "identity")+
+  theme_void()+
+  theme(text=element_text(face="bold"))+
+  scale_x_continuous(expand = c(0,0))+
+  scale_y_continuous(expand = c(0,0))+
+    scale_fill_manual(values=c("#833F3A","#747B4E","lightgrey"),name="Variance")+
+  geom_text(y=c(.93,.985,.5),aes(label=paste0(round(explpct,digits = 2),"%")),fontface="bold",hjust=.5)
+
+
+
+df.venn <- data.frame(x = c(3, 1),y = c(1, 1),
+                      labels = c(paste0('Satellite data \n (',
+                                        round(vp_veg$part$indfract$Adj.R.squared[1],digits=2),
+                                        '%)'),
+                                 paste0('MEMs \n (',
+                                        round(vp_veg$part$indfract$Adj.R.squared[2],digits=2),
+                                        '%)')))
+
+pvp_venn <- ggplot(df.venn, aes(x0 = x, y0 = y, r = 1.5, fill = df.venn$labels)) +
+  ggforce::geom_circle(alpha = .8, linewidth = 1, colour = 'black',show.legend = FALSE ) +
+  ggforce::geom_circle(alpha = 0, linewidth = 1, colour = 'black',show.legend = FALSE ) +
+  coord_fixed()+
+  geom_label(df.venn,mapping=aes(x = x , y = y,label=labels) ,color="black",label.size=0,size = 5,fill="lightgrey",alpha=.2,fontface="bold",show.legend = FALSE )+
+  scale_fill_manual(values=c("#833F3A","#747B4E"))
+pvp_venn+theme_void()
+```
+
+
+## GDM
+
+Format input for the General dissimilarity model. Ran with GDM package.
+```{r}
+meco_tmp <- meco_16s 
+#Prepare GDM inputs
+
+#extract bioclim predictors
+data_sat_tmp <- meco_16s$sample_table[, c("Sample",var2use)] 
+bioclim_predictors <- c(var2use)
+
+# create gdm_predddata
+gdm_preddata <- data_sat_tmp %>%
+  left_join(meco_16s$sample_table[,c("Sample","X","Y")])
+
+
+
+# get communities
+comunity_df_hellingered <- as.data.frame(labdsv::hellinger(t(meco_tmp$otu_table))) # Hellinger transformation
+comunity_df_hellingered$Sample <-  rownames(comunity_df_hellingered)  # get site name (i.e., sample)
+
+# create gdm_biodata with site X and Y (long and lat)
+gdm_biodata <- comunity_df_hellingered %>% 
+  left_join(meco_16s$sample_table[,c("Sample","X","Y")])%>%
+  relocate(Sample,X,Y)
+
+# Compute geographic distance matrix using geodesic method to account for earth's curvature (GDM is not)
+mat_geo_gdm <- geodist::geodist(meco_16s$sample_table[,c("X","Y")],measure = 'geodesic')/1000 # /1000 for km distance
+rownames(mat_geo_gdm) <- colnames(mat_geo_gdm) <- meco_16s$sample_table$Sample
+mat_geo_gdm <- cbind("Sample"=rownames(mat_geo_gdm),mat_geo_gdm)
+
+#Format data
+gdm_formated <- gdm::formatsitepair(bioData = gdm_biodata, # create data in the gdm format
+                                        bioFormat = 1, # say how we format our data
+                                        dist = "horn", # biological distance
+                                        abundance = T, # abundance (not p/a data)
+                                        siteColumn = "Sample",
+                                        sppColumn = NULL,
+                                        abundColumn = NULL,
+                                        XColumn = "X",
+                                        YColumn = "Y",
+                                        predData = gdm_preddata,
+                                        distPreds =list(mat_geo_gdm))
+
+gdm_fitted <- gdm::gdm(gdm_formated_tmp, # fit gdm
+                       geo = F) # geo is F because we gave our own geodist matrix
+```
+
+Investigate results
+```{r}
+gdm::summary(gdm_fitted)
+```
+
+
+Plot GDM results
+```{r}
+# get spline data
+gdm_spline_data <- gdm::isplineExtract(gdm_fitted)
+
+# format data for plot
+dgdm_var <- gdm_spline_data$x%>% # get variable variation range
+  reshape2::melt()%>%
+  rename(valuex=value)%>%
+  #get variable with non null GDM effect
+  left_join(reshape2::melt(gdm_spline_data$y[,which(colSums(gdm_spline_data$y)!=0)]))%>% 
+  mutate(Var2=gsub("_[a-z]{2}","",Var2))%>%
+  rename(valuey=value)%>%
+  left_join(names_df_clean)%>%  #join clean names
+  mutate(midname=ifelse(is.na(midname),"Geographic distance",midname))%>% #rename
+  mutate(midname=forcats::fct_relevel(midname,unique(names_df_clean$midname)))%>% #relevel
+  filter(Var2%in%gsub("_[a-z]{2}","",names(which(colSums(gdm_spline_data$y)!=0))))
+
+#plot variable spline
+gdm_plot_var <- dgdm_var %>%
+  group_by(midname)%>% # group by variable
+  #normalize variable unit between 0-1
+  mutate(valuexn=((valuex - min(valuex, na.rm = T))/(max(valuex, na.rm = T) - min(valuex, na.rm = T))))%>% 
+  mutate(mxy=max(valuey))%>% # get maximal value
+  ungroup()%>%
+  arrange(desc(mxy))%>% # arrange by maximal value
+  mutate(midname=forcats::fct_inorder(midname))%>% # order levels by max value
+  ggplot(aes(x=valuexn, y=valuey,color=midname))+ #plot lines
+  geom_line(linewidth=1.5)+
+  theme_bw()+
+  scale_color_manual(values=paletteer::paletteer_d("nationalparkcolors::Acadia"))+
+  guides(color=guide_legend(ncol=3))+
+  scale_y_continuous(expand = c(0,0),limits = c(0,1))+
+  scale_x_continuous(expand = c(0,0))+
+  xlab("0-1 scaled variables")+
+  ylab("GDM effect")+
+  theme(legend.position = c(.5,.9),
+        legend.background = element_rect(color='black'),
+        legend.title = element_blank())
+
+#plot variable range
+
+
+```
+
+Plot prediction versus observation of the GDM
+```{r}
+#get data
+dgdm_pred <- data.frame(pred=gdm_fitted$predicted,
+                     obs=gdm_fitted$observed,
+                     eco=gdm_fitted$ecological)
+
+#get density for plotting
+dgdm_pred$density_ecoobs <- fct_list$get_density(dgdm_pred$obs, dgdm_pred$eco, n = 100)
+dgdm_pred$density_obspred <- fct_list$get_density(dgdm_pred$obs, dgdm_pred$pred, n = 100)
+
+#get exp curve to plot over data
+overlayX <- seq(from = min(dgdm_pred$eco), 
+                to = max(dgdm_pred$eco), 
+                length = 171)
+overlayY <- 1 - exp(-overlayX)
+df_over <- data.frame(x=overlayX,y=overlayY)
+
+# Plot prediction vs obs
+gdm_plot_pred <-
+  #ecological distance vs observed biodistance
+  ggplot()+
+  geom_point(dgdm_pred,mapping=aes(x=eco,
+                                   y=obs,
+                                   color=density_ecoobs))+
+  geom_line(data=df_over,mapping=aes(x=x,y=y),color="#7b3700",lwd=1.5)+
+  ylim(c(0,1))+ 
+  scale_color_gradientn(colors = paletteer::paletteer_d("fishualize::Acanthostracion_polygonius"),
+                        name="Density")+
+  xlab("Ecological distance")+
+  ylab("Observed dissimilarity")+
+  ggpubr::theme_classic2()+
+  theme(legend.position = c(.8,.25),
+        legend.background = element_rect(color="black"))+
+  #observed biodistance vs pred
+  ggplot(prd_df,
+         aes(x=pred,
+             y=obs,
+             color=density_obspred))+
+  geom_point()+
+  geom_abline (slope=1, color="#7b3700",lwd=1.5)+
+  scale_color_gradientn(colors = paletteer::paletteer_d("fishualize::Acanthostracion_polygonius"),
+                        name="Density")+
+  xlab("Predicted dissimilarity")+
+  ylab("Observed dissimilarity")+
+  # ylim(c(.2,1))+
+  # xlim(c(.2,1))+
+  ggpubr::theme_classic2()+
+  theme(legend.position = c(.15,.8),
+        legend.background = element_rect(color="black"))
+
+ptmp <-( (gdm_plot_pred)/(gdm_plot_var+gdm_var_contrib))+ plot_annotation(tag_levels = 'A')&theme(text=element_text(face="bold"))
+```
+
+## dbRDA
+
+Run dbRDA using satellite data and MEMs (accounting for spatial signal)
+```{r}
+
+library(ggvegan)
+var_tmp <- c(var2use,names(select(meco_16s$sample_table,starts_with("MEM"))))
+
+#dbrda var table
+d_dbrda <- meco_16s$sample_table %>% 
+  select(c(var_tmp,"Sample","koppen_clim"))
+#get communities
+com_tmp <- meco_16s
+
+# build formula
+formula_tmp <- paste0("labdsv::hellinger(t(com_tmp$otu_table))~",paste0(var_tmp, collapse = "+"))
+
+#run dbrda
+dbrda_tmp <- vegan::dbrda(formula=formula(formula_tmp),data=d_dbrda, distance="horn") 
+
+#get eigen values of axes
+eig <- c(dbrda_tmp$CCA$eig)
+eig1 <- round((eig[1]/sum(eig))*100,digits = 2) # % of explained inertia of the first axis
+eig2 <- round((eig[2]/sum(eig))*100,digits = 2) # % of explained inertia of the second axis
+
+#create plot data
+fort_rda_tmp <- fortify(dbrda_tmp) # transform dbrda results in a ggplot2 usable format
+vars <- c("dbRDA1","dbRDA2") # we will plot in the first two dimensions
+want <- fort_rda_tmp[["score"]] == "biplot" # get variables scores (arrows)
+
+mul <- fct_list$arrowMul(fort_rda_tmp[want, vars, drop = FALSE],
+                fort_rda_tmp[!want, vars, drop = FALSE]) # get the scaling factor to scale these scores for 
+fort_rda_tmp[want, vars] <- mul * fort_rda_tmp[want, vars] # scale the scores 
+
+fort_rda_tmp%<>% # get cleannames for variables
+  mutate(label=gsub("_lt","",label))%>%
+  left_join(rename(names_df_clean,label=Var2))%>%
+  mutate(midname=ifelse(is.na(midname),label,midname))
+
+# test variable significances
+var_signif <- anova(dbrda_tmp,by="terms")
+var_signif%<>%
+  mutate(label=gsub("_lt",'',rownames(.)),
+         signif=ifelse(`Pr(>F)`>0.05,"No","Yes"))
+
+# add to data
+fort_rda_tmp%<>%
+  left_join(var_signif)
+
+# plot
+dbrda_site_biplot_mems <- 
+  #plot two first dimensions
+  ggplot(fort_rda_tmp, aes(x = dbRDA1, y = dbRDA2)) +
+  #plot samples (sites)
+  geom_point(data = cbind(subset(fort_rda_tmp, score == "sites"), # add points (sites) corresponding to samples
+                          koppen_clim=d_dbrda$koppen_clim), 
+             aes(color = koppen_clim), 
+             size = 4,
+             alpha=.8,
+             shape=19) +
+  scale_color_manual(values = climate_palette,name="Climatic zone",guide = guide_legend(order = 1))+
+  #new color scale
+  ggnewscale::new_scale_color()+
+  #plot variable arrows
+  geom_segment(data = subset(fort_rda_tmp, score == "biplot"), # add arrows for variables
+               aes(x = 0, y = 0, xend=dbRDA1, yend=dbRDA2,color=SumOfSqs,lty=signif),#color according to sum of sq and dashed line if not significant
+               lineend = "round", 
+               linejoin = "round",
+               linewidth = 1, 
+               arrow = arrow(length = unit(0.1, "inches")),
+               key_glyph = "abline") +
+  scale_linetype_manual(values = c(2,1),name="p<0.05",guide = guide_legend(order = 3))+
+  scale_color_gradient(low="#FFC6C4FF",high = "#672044FF", name="Sum of square",guide = guide_legend(order = 2))+
+  coord_fixed()+ # fix proportion between axis units
+  # plot variable labels
+  geom_label(data = fort_rda_tmp[want, , drop = FALSE ], # add variable names at the end of arrows
+            aes(x = dbRDA1*1.2, # nudge a bit the coordinates so that they're not on the arrows
+                y = dbRDA2*1.2,
+                label = midname),
+            fontface="bold",
+            alpha=0,
+            label.size=NA)+
+  theme_classic()+
+  xlab(paste0("dbRDA1 (",eig1,"%)"))+
+  ylab(paste0("dbRDA2 (",eig2,"%)"))+
+  guides(fill="none")  +
+  geom_hline(yintercept=0,linetype = "dashed")+
+  geom_vline(xintercept=0,linetype = "dashed")+
+  theme(plot.title = element_text(face="bold"))+
+  coord_fixed()+
+  theme(text=element_text(face="bold"))
+
+devtools::unload("ggvegan")
+dbrda_site_biplot_mems
+```
+
+
+## Distance Decay
+
+
+Build a distance decay plot for three different distances. 
+Morisita horn on hellinger transformed reads data.
+Bray Curtis
+Sorensen
+```{r}
+#morisita
+d1 <- vegan::vegdist(labdsv::hellinger(t(meco_16s$otu_table)),"horn")%>% 
+  as.matrix()%>%
+  data.frame()%>%
+  mutate(site1=rownames(.))%>%
+  reshape2::melt()%>%
+  filter(site1!=variable)%>%
+  mutate(dist="horn")
+#bray curtis
+d2 <- vegan::vegdist(t(meco_16s$otu_table),"bray")%>%
+  as.matrix()%>%
+  data.frame()%>%
+  mutate(site1=rownames(.))%>%
+  reshape2::melt()%>%
+  filter(site1!=variable)%>%
+  mutate(dist="bray")
+#Sorensen
+d3 <- vegan::vegdist(t(meco_16s$otu_table),"bray",binary = T)%>%
+  as.matrix()%>%
+  data.frame()%>%
+  mutate(site1=rownames(.))%>%
+  reshape2::melt()%>%
+  filter(site1!=variable)%>%
+  mutate(dist="sorensen")
+
+#geographic distance
+mat_geo <- geodist::geodist(meco_16s$sample_table[,c("X","Y")],measure = 'geodesic')%>%
+  data.frame()%>%
+  set_colnames(meco_16s$sample_table$Sample)%>%
+  set_rownames(meco_16s$sample_table$Sample)%>%  
+  mutate(site1=rownames(.))%>%
+  reshape2::melt()%>%
+  filter(site1!=variable)%>%
+  rename(geodist=value)%>%
+  mutate(geodist=geodist/1000)
+
+#merge
+d4 <- rbind(d1,d2,d3)%>%
+  left_join(mat_geo)%>%
+  mutate(geodist=geodist,
+         value=1-value) #convert to similarity (1-distance)
+
+#linear models
+mhorn <- lm(value ~ (geodist), data = filter(d4,dist=="horn"))
+mbray <- lm(value ~ (geodist), data = filter(d4,dist=="bray"))
+msorensen <- lm(value ~ (geodist), data = filter(d4,dist=="sorensen"))
+# see that p <2e-16
+
+# get the equation object in a format for use in ggplot2
+eqnhorn <-  fct_list$lm_eqn_dd(filter(d4,dist=="horn"), mhorn,"Morisita-Horn")
+eqnbray <- fct_list$lm_eqn_dd(filter(d4,dist=="bray"), mbray,"Bray-Curtis")
+eqnsorensen <- fct_list$lm_eqn_dd(filter(d4,dist=="sorensen"), msorensen,"Sørensen")
+
+# create annotation datarame
+df_eq <- data.frame(dist=c("horn","bray","sorensen"),
+                    labz=c(eqnhorn,eqnbray,eqnsorensen),
+                    geodist=rep(2500,3),
+                    value=c(.5,.6,.7))
+
+pDD <- d4%>%
+  ggplot(aes(x=geodist,y=value,color=dist))+
+  geom_point(alpha=.04,shape=16)+
+  ggpubr::theme_classic2()+ 
+  stat_smooth(method = "lm",se = F,linewidth=2, lineend = "round") +
+  geom_label(df_eq,mapping=aes(x=geodist,y=value,label=labz),alpha=.2,hjust=0,parse = T,fontface="bold",fill="lightgrey")+
+  scale_color_manual(values = paletteer::paletteer_d("MoMAColors::Andri"),
+                     name="Dissimilarity:",
+                     labels=c("Bray-Curtis",
+                              "Morisita-horn on Hellinger transformed",
+                              "Sørensen"),
+                     guide="none")+
+  ylab("1-Dissimilarity")+
+  xlab("Geographic distance (Km)")+
+  theme(text = element_text(face="bold"))
+pDD
+```
+
+
+#III- Enzymatic activity
+
+
+## Boruta
+```{r}
+library(Boruta)
+var_boruta <- c(var2use,names(select(meco_16s$sample_table,starts_with("MEM"))),"bacg","dim1","dim2","dim3")
+dboruta <- meco_16s$sample_table
+  filter(!is.na(bacg)&bacg>0)%>%
+  select()
+
+
+dboruta_list <- NULL
+pboruta_list <- NULL
+for(enzyme in c("BG","AP","LAP","NAG")){
+  set.seed(973)
+  dboruta_tmp <- dboruta%>%
+    select(-c("BG","AP","LAP","NAG")[-which(c("BG","AP","LAP","NAG")%in%enzyme)])
+  dboruta_tmp%<>%
+    relocate(.data[[enzyme]])%>%
+    rename(targ_enz=.data[[enzyme]])
+  
+  boruta_train <- Boruta(targ_enz~., data = dboruta_tmp, doTrace = 2,maxRuns=500)
+  final_boruta <- TentativeRoughFix(boruta_train)
+  boruta_df <- attStats(boruta_train)
+  
+  
+  #make a radar plot from these! 
+  #scale boruta varIMP results between 0 and 1
+  range01 <- function(x){(x-min(x))/(max(x)-min(x))}
+  boruta_df01 <- range01(boruta_df[,c(1:4)])
+  boruta_df01$decision <- boruta_df$decision
+  #re-order by type of variables | climate, soil, plant
+  boruta_df01$factors <- rownames(boruta_df01)
+  boruta_df01%<>%
+    mutate(factors=gsub("_lt","",factors))%>%
+    left_join(rename(names_df_clean,factors=Var2))%>%
+    mutate(midname=ifelse(is.na(midname),factors,midname))%>%
+    mutate(midname=ifelse(grepl("dim",midname),gsub("dim","PCOA ",midname),midname))%>%
+    mutate(midname=ifelse(midname=="bacg","Biomass",midname))%>%
+    mutate(midname=forcats::fct_inorder(midname))%>%
+    mutate(decision=forcats::fct_relevel(decision,"Confirmed","Tentative","Rejected"))
+  
+  
+  p <- ggplot(boruta_df01, aes(x=midname, y=maxImp, fill=maxImp)) +
+    geom_histogram(binwidth=1, stat="identity") +
+    theme_light() +
+    scale_fill_gradientn(colors = paletteer::paletteer_d("rcartocolor::ArmyRose"), limits=c(0,1),name = "Maximal importance") 
+  pboruta_list[[enzyme]] <-  p+
+    coord_polar(clip = "off")+
+    geom_segment(mapping=aes(y=0, xend=midname,
+                             yend=medianImp,
+                             linetype=decision),
+                 show.legend = TRUE)+
+    scale_linetype_manual(values=c("Confirmed"=1,"Tentative"=2,"Rejected"=0), name="Boruta decision",drop=F)+
+    geom_segment(data=filter(boruta_df01,decision!='Rejected'),
+                 mapping=aes(y=0, xend=midname,yend=medianImp),
+                 linetype=0,
+                 arrow = arrow(length=unit(0.30, "cm"), type="closed"))+
+    theme(text=element_text(face="bold"),
+          axis.line.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          axis.text.y = element_blank(),
+          axis.title = element_blank(),
+          panel.border = element_blank())+
+    ggtitle(enzyme) 
+  dboruta_list[[enzyme]]$dbtrain <- boruta_train
+  dboruta_list[[enzyme]]$dbfinal <- boruta_df
+  dboruta_list[[enzyme]]$dbplot <- boruta_df01
+}
+
+enz_boruta <- patchwork::wrap_plots(pboruta_list)+
+  plot_layout(guides="collect")&
+  theme(plot.title = element_text(hjust=.5),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        legend.background = element_blank())
+
+
+devtools::unload(Boruta)
+```

@@ -1,0 +1,41 @@
+# Snakemake workflow
+
+__author__ = "Tristan Lafont Rapnouil"
+__email__ = "tristan.lafontrapnouil@gmail.com"
+
+"""
+DESCRIPTION
+
+This is a snakemake workflow that processes sequences from the MAPP project using dada2.
+
+"""
+configfile:"config.yaml"
+report:"report/workflow.rep"
+
+
+rule all:
+    input:
+        expand(config["resultsfolder"]+"{run}/{run}_seqtabnochim.csv",run = config["datasets"]),
+        expand(config["resultsfolder"]+"{run}/{run}_taxassigned.csv",run = config["datasets"]),
+        expand(config["resultsfolder"]+"{run}/{run}_tabseq.csv",run = config["datasets"])        
+
+#runall
+rule taxassign:
+  input:
+    config["datafolder"]+"{run}/"
+  output:
+    config["resultsfolder"]+"{run}/{run}_taxassigned.csv",
+    config["resultsfolder"]+"{run}/{run}_seqtabnochim.csv",
+    config["resultsfolder"]+"{run}/{run}_tabseq.csv"
+  params:
+    lambda wildcards: config["taxassign"]["right2trunk_{}".format(wildcards.run)],
+    config["taxassign"]["multithread"],
+    config["taxassign"]["tax_file"]
+  benchmark:
+    "benchmarks/{run}/dada2.txt" 
+  log:
+    "log/{run}/dada2.log"
+  conda:
+    "envs/R_env.yaml"
+  script:
+    "scripts/dada2.R"

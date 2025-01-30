@@ -1,0 +1,19 @@
+# general params
+general:
+    cores: 100
+
+datafolder:
+    resources/
+resultsfolder:
+    results/
+benchmarksfolder:
+    benchmarks/
+datasets:
+
+    - MAPP_300
+
+# taxa
+taxassign:
+    tax_file : taxonomy_database/silva_nr99_v138.2_toGenus_trainset.fa
+    right2trunk_MAPP_300 : 70
+    multithread: 10
