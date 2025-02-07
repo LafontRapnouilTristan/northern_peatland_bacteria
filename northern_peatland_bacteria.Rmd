@@ -41,6 +41,11 @@ library(patchwork)
 ```{r}
 fct_list <- NULL
 
+fct_list$range01 <- function(x){(x-min(x))/(max(x)-min(x))}
+
+fct_list$is_all_numeric <- function(x) {
+  !any(is.na(suppressWarnings(as.numeric(na.omit(x))))) & is.character(x)
+}
 # A function for paired correlation plot
 fct_list$cor_fun <- function(data, mapping, method="pearson", use="pairwise", sz=5, ...){
     # grab data
@@ -216,8 +221,13 @@ fct_list$arrowMul <- function(arrows, data, at = c(0, 0), fill = 0.75) {
 }
 
 
+heat_tree <- function(...) {
+  UseMethod("heat_tree")
+}
+
+
 # MetacodeR tree edited
-fct_list$heat_tree.Taxmap <- function(.input, ...) {
+heat_tree.Taxmap <- function(.input, ...) {
   # Non-standard argument evaluation
   data <- .input$data_used(...)
   data <- lapply(data,
@@ -257,7 +267,7 @@ fct_list$heat_tree.Taxmap <- function(.input, ...) {
   do.call(heat_tree, arguments)
 }
 
-fct_list$heat_tree.default <- function(taxon_id, supertaxon_id, 
+heat_tree.default <- function(taxon_id, supertaxon_id, 
                               node_label = NA,
                               edge_label = NA,
                               tree_label = NA,
@@ -1133,6 +1143,7 @@ site_data%<>%left_join(cyto_data)%>%
 enz_data <- readxl::read_xlsx("raw_data/enzymes_data.xlsx")
 enz_data%<>%
   rename(Sample=ID)%>%
+  mutate(across(where(is.numeric), ~na_if(., 0))) %>% # set as NA when 0 activity (measure artefact)
   mutate(Sample=ifelse(stringr::str_count(Sample,"\\d")==1,paste0("MAPP_00",Sample),
                        ifelse(stringr::str_count(Sample,"\\d")==2,paste0("MAPP_0",Sample),paste0("MAPP_",Sample))))%>%
   rename_with(~stringr::str_c("xtra_", .), 2:5)
@@ -1144,22 +1155,29 @@ site_data%<>%left_join(enz_data)
 ## climate zones
 
 ```{r}
-library(kgc)
+library(kgc) # load Köppen-Geiger Classifictaion package
+#create dataframe with coordinates and sample ID
 kgc_zone <- data.frame(Sites=site_data$Sample,
-                       rndCoord.lon = kgc::RoundCoordinates(site_data$X),
+                       # round coordinates to closest in kGC grid
+                       rndCoord.lon = kgc::RoundCoordinates(site_data$X), 
                        rndCoord.lat = kgc::RoundCoordinates(site_data$Y))
+#Fetch classification in database
 ClimateZ <- kgc::LookupCZ(kgc_zone)
+# save twice to keep og kG climate and also our derived classification
 site_data$climateZ_ori <- ClimateZ
 site_data$koppen_clim <- ClimateZ
 
+#unload plyr (loaded with kgc) because it has its own 'select' fct interfering with dplyr
 devtools::unload("plyr")
 devtools::unload("kgc")
 
+# Adapt KGC to have three balanced group
 site_data%<>%
   mutate(koppen_clim=ifelse(climateZ_ori%in%c('Cfa','Cfb','Csa','Csb'),"Temperate",koppen_clim))%>%
   mutate(koppen_clim=ifelse(climateZ_ori%in%c('Dfa','Dfb',"Dwa","Dwb"),"Continental hot summer",koppen_clim))%>%
   mutate(koppen_clim=ifelse(climateZ_ori%in%c('Dwc','ET','Dfc'),"Continental cold/Tundra",koppen_clim))
 
+# Set climate zones color
 climate_palette <- paletteer::paletteer_d("MetBrewer::Austria")[1:3]
 names(climate_palette) <- c("Continental hot summer","Continental cold/Tundra","Temperate")
 ```
@@ -1168,25 +1186,27 @@ names(climate_palette) <- c("Continental hot summer","Continental cold/Tundra","
 ##map sites 
 
 ```{r}
+# transfrom to shapefile format with  appropriate projection (crs 4326)
 sf_df2map <- sf::st_as_sf(site_data, coords = c("X", "Y"), 
                            crs = 4326, agr = "constant")
 
+#get world map
 world <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
 # Subset the world data to include only the specified latitude range
 cropping <- as(raster::extent(-180, 180, 27, 90), "SpatialPolygons")
-
-
 world_subset <- raster::crop(sf::as_Spatial(world),cropping)
 world_subset <- sf::st_transform(sf::st_as_sf(world_subset), crs = 4326)
 # Create a Lambert azimuthal equal-area projection centered on the North Pole
 world_lambert <- sf::st_transform(sf::st_as_sf(world_subset), crs = sf::st_crs(3995))
 
+#create donut to have clean map border
 donut <- list(cbind(x = c(0:360, 360:0, 0), y = c(rep(29, 361), c(rep(25,361)), 29))) %>% 
   sf::st_polygon() %>%  
   sf::st_sfc(crs = 4326) %>% 
   sf::st_transform(sf::st_crs(3995)) 
 
-fortyfive <- cbind(x = 0:360, y = rep(29, 361)) %>% 
+#create a black line to plot the 29 lat (order of our map)
+twentynine <- cbind(x = 0:360, y = rep(29, 361)) %>% 
   sf::st_linestring() %>%  
   sf::st_sfc(crs = 4326) %>%
   sf::st_transform(sf::st_crs(3995)) 
@@ -1195,7 +1215,7 @@ mapproj <-
   ggplot() +
   geom_sf(data = world_lambert, fill = "#FAEBD7", color = "darkgrey", size = 0.1)+
   geom_sf(data = sf_df2map, size = 2, aes(color=koppen_clim) ,alpha=.7) +
-  geom_sf(data=fortyfive,color="black",linewidth=1)+
+  geom_sf(data=twentynine,color="black",linewidth=1)+
   geom_sf(data=donut,fill="white",color=NA)+
   ggtitle("") +
   theme(plot.title = element_text(hjust = 0.5, size = 16))+
@@ -1204,13 +1224,25 @@ mapproj <-
   theme(text=element_text(face="bold"),
         legend.position = 'bottom',
         legend.direction = "horizontal",
-        legend.title = element_blank())
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank())
 mapproj
 ```
+
+
+```{r}
+the_climate_legend_horizontal <- ggpubr::get_legend(mapproj)
+ggsave("figures_and_results/figures/horizontal_legend.png",the_climate_legend_horizontal,height = .5,width = 5)
+```
+
 
 ## Available Data
 
 ### Terra Climate
+
+IDAHO_EPSCOR/TERRACLIMATE
 
 These are monthly weather data.
 Long term : 2016/01/01 to 2021/01/01
@@ -1295,33 +1327,34 @@ CSP/HM/GlobalHumanModification
 site_data %<>% # remove short term variable 
     dplyr::select(names(.)[!grepl('_[0-9]{2}', names(.))])
 
-var_missing_val <- as.data.frame(colSums(is.na(select(site_data,names(site_data)[!grepl('xtra', names(site_data))]))))%>% # plot NAs counts and %of variables
-    rename(nb_na=`colSums(is.na(select(site_data, names(site_data)[!grepl("xtra", names(site_data))])))`)%>%
-    mutate(var=rownames(.))%>%
-    filter(nb_na!=0)%>%
-    ggplot(aes(x=var,y=nb_na))+
-    geom_bar(stat='identity',color='midnightblue',fill="white",width=1)+
-    ggpubr::theme_classic2()+
-    theme(axis.text.x = element_text(angle=45,hjust=1),
-          plot.title = element_text(face="bold"))+
-    scale_y_continuous(expand = c(0,0))+
-    ggtitle("Number of missing values")+
-as.data.frame(colSums(is.na(select(site_data,names(site_data)[!grepl('xtra', names(site_data))]))))%>%    rename(nb_na=`colSums(is.na(select(site_data, names(site_data)[!grepl("xtra", names(site_data))])))`)%>%
-    mutate(var=rownames(.),
-           na_pct=(nb_na/202)*100)%>%
-    filter(nb_na!=0)%>%
-    mutate(non_na_pct=100-na_pct)%>%
-    reshape2::melt(id.variables=c(var,nb_na))%>%
-    filter(variable!="nb_na")%>%
-    mutate(variable=forcats::fct_relevel(variable,"non_na_pct","na_pct"))%>%
-    ggplot(aes(x=var,y=value,fill=variable))+
-    geom_bar(stat='identity',width=1,position="fill")+
-    scale_fill_manual(values=c("lightgrey","mediumvioletred"))+
-    ggpubr::theme_classic2()+
-    theme(axis.text.x = element_text(angle=45,hjust=1),
-          plot.title = element_text(face="bold"))+
-    ggtitle("Percentage of missing values")+
-    scale_y_continuous(expand = c(0,0))
+# plot NAs counts and % of variables
+var_missing_val <- as.data.frame(colSums(is.na(select(site_data,names(site_data)[!grepl('xtra', names(site_data))]))))%>% 
+  rename(nb_na=`colSums(is.na(select(site_data, names(site_data)[!grepl("xtra", names(site_data))])))`)%>%
+  mutate(var=rownames(.))%>%
+  filter(nb_na!=0)%>%
+  ggplot(aes(x=var,y=nb_na))+
+  geom_bar(stat='identity',color='midnightblue',fill="white",width=1)+
+  ggpubr::theme_classic2()+
+  theme(axis.text.x = element_text(angle=45,hjust=1),
+        plot.title = element_text(face="bold"))+
+  scale_y_continuous(expand = c(0,0))+
+  ggtitle("Number of missing values")+
+  as.data.frame(colSums(is.na(select(site_data,names(site_data)[!grepl('xtra', names(site_data))]))))%>%    rename(nb_na=`colSums(is.na(select(site_data, names(site_data)[!grepl("xtra", names(site_data))])))`)%>%
+  mutate(var=rownames(.),
+         na_pct=(nb_na/202)*100)%>%
+  filter(nb_na!=0)%>%
+  mutate(non_na_pct=100-na_pct)%>%
+  reshape2::melt(id.variables=c(var,nb_na))%>%
+  filter(variable!="nb_na")%>%
+  mutate(variable=forcats::fct_relevel(variable,"non_na_pct","na_pct"))%>%
+  ggplot(aes(x=var,y=value,fill=variable))+
+  geom_bar(stat='identity',width=1,position="fill")+
+  scale_fill_manual(values=c("lightgrey","mediumvioletred"))+
+  ggpubr::theme_classic2()+
+  theme(axis.text.x = element_text(angle=45,hjust=1),
+        plot.title = element_text(face="bold"))+
+  ggtitle("Percentage of missing values")+
+  scale_y_continuous(expand = c(0,0))
 
 var_missing_val
 ```
@@ -1430,8 +1463,6 @@ site_data$ph <- imputed_data_lt$ph
 site_data$gpp_lt <- imputed_data_lt$gpp
 ```
 
-
-
 ```{r}
 pca_tmp <- site_data %>% 
   dplyr::select(all_of(c(var2use[-7],"X","Y")))%>%
@@ -1498,6 +1529,47 @@ scree_plot_var_list <- factoextra::fviz_screeplot(pca_tmp,barfill = "lightgrey",
 pca_site_var+scree_plot_var_list
 ```
 
+```{r}
+data_perm_satellite <- scale(select(site_data,all_of(c(var2use[-7],"X","Y"))))
+rownames(data_perm_satellite) <- site_data$Sample
+#check the hypothesis that dispersion is roughly the same between my groups in multivariate space
+dis <- vegan::vegdist(data_perm_satellite,method="eu") #we create a distance matrix between our individuals
+mod <- vegan::betadisper(dis,site_data$koppen_clim) #we calculate the multivariate dispersions i.e. average distance to centroids
+p_dist2grpcentroid <- 
+mod$distances%>%
+  reshape2::melt()%>%
+  mutate(Sample=rownames(.))%>%
+  left_join(site_data)%>%
+  ggplot(aes(fill=koppen_clim,x=value))+
+  geom_density(alpha=.5)+
+  xlab("Distance to group centroïd")+
+  ggpubr::theme_classic2()+
+  scale_x_continuous(expand = c(0,0))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_fill_manual(values = climate_palette,name="Climatic zone")+
+  theme(text = element_text(face = "bold"))
+p_dist2grpcentroid
+```
+
+
+```{r}
+#run permanova
+adon.res1 <- vegan::adonis2(data_perm_satellite~site_data$koppen_clim,
+                            perm = 1000, na.rm = T, method = "eu",p.adjust.methods="holm" ) 
+adon.res1%>% #save
+  flextable::flextable()%>%
+  flextable::save_as_docx(path=paste0("figures_and_results/tables/permanova_satellites.docx"))
+
+pair.adon.res1 <- pairwiseAdonis::pairwise.adonis(data_perm_satellite, #run pairwise permanova
+                                                  site_data$koppen_clim,
+                                                  p.adjust.m = "holm",
+                                                  sim.method = "eu", perm=1000)
+pair.adon.res1%>% #save
+  dplyr::select(-sig)%>%
+  flextable::flextable(cwidth = c(1,.5,1,1,1,1,1))%>%
+  flextable::save_as_docx(path=paste0("figures_and_results/tables/permanova_sattelites_pairwise.docx"))
+```
+
 
 # C - MetabaR Processing
 
@@ -1551,11 +1623,7 @@ metab_list <- metabaR::metabarlist_generator(reads = t(as.matrix(microtu)), # cr
                                     motus = microtax,
                                     pcrs = microsam,
                                     samples = microsam)
-
-
 ```
-
-
 
 ## Start MetabaR processing
 
@@ -1626,7 +1694,7 @@ non_targetconta_prop <- NULL
 data_temp <- metab_list
 
 #Flag ASVs corresponding to target (TRUE) vs. non-target (FALSE) taxa 
-data_temp$motus$target_taxon <- grepl("Bacteria|Archaea", data_temp$motus$Kingdom)&!grepl("Chloroplast",data_temp$motus$Order)&!grepl("Mitochondria",data_temp$motus$Family)  # MITO 
+data_temp$motus$target_taxon <- grepl("Bacteria", data_temp$motus$Kingdom)&!grepl("Chloroplast",data_temp$motus$Order)&!grepl("Mitochondria",data_temp$motus$Family)  # MITO 
 non_targ_asvs <- data_temp$motus$observation_name[which(data_temp$motus$target_taxon==F)]
 # Proportion of each of these over total number of ASVs
 non_target_prop <- table(data_temp$motus$target_taxon) / nrow(data_temp$motus)
@@ -1885,18 +1953,67 @@ meco_16s$rarefy_samples(sample.size=7000)
 
 meco_16s$sample_table%<>%
   mutate(nb_reads_raref=colSums(meco_16s$otu_table),
-         nb_asvs_raref=colSums(meco_16s$otu_table>1))
+         nb_asvs_raref=colSums(meco_16s$otu_table>0))
 meco_16s$tidy_dataset()
+
+#fix taxtable post tidy_dataset
+meco_16s$tax_table%<>%
+  mutate(across(everything(),~gsub(paste0(tolower(stringr::str_extract(cur_column(),
+                                                                       "^[a-zA-Z]")),
+                                          "__"),"",.x)))
+rownames(meco_16s$tax_table) <- meco_16s$tax_table$ASV_id
+meco_16s$tax_table%<>% 
+  mutate_if(fct_list$is_all_numeric,as.numeric)
 ```
 
-### Get a phylogenetic tree 
+### Get a taxonomic tree 
 
-We cant create a robust phylogenetic tree with only 16s DNA but it will be used to display ASV informations without interpretation of their exact relation. The tree should conserve the higher taxonomical relation.
+We cant create a robust phylogenetic tree with only 16s DNA so we will build one according to taxonomic assignation and structure.
 
 ```{r}
-phy <- file2meco::meco2phyloseq(meco_16s)
-fasta <- paste0(paste0(">",rownames(phy@tax_table)),"\n",gsub("s__","",phy@tax_table[,2]))
-write(fasta,"processed_data/fasta4tree.fasta")
+#load ape to build tree
+library(ape)
+#load packages to ggplot the tree
+library(ggtree)
+library(treeio)
+library(ggtreeExtra)
+library(phyloseq)
+
+#build a new taxonomy table
+tmp_tax <- 
+  #replace not assigned levels by "Unknown [taxlevel]" (e.g.,Unknown Genus,Unknown Class)
+  mutate(meco_16s$tax_table,across(c(16:21),~ifelse(.x=="",paste0("Unknown ",cur_column()),.x)))%>%
+  #remove parenthesis from assignation as it disrupts ape 
+  mutate(across(c(16:21),~gsub("\\(|\\)", "", .x),.names="new_{.col}"))%>%
+  #convert to factor
+  mutate(across(c(1,24:29),~factor(.x)))
+
+# remove singletons and prevalence <10 pct
+non_singleton_asv <- rowSums(meco_16s$otu_table)>1 #id non singletons
+more_10pct_prev_asv <- rowSums(meco_16s$otu_table>0)>.1*171 #id >10pv prev
+
+tmp_tax <- tmp_tax[non_singleton_asv,] #remove em
+tmp_tax <- tmp_tax[more_10pct_prev_asv,]
+rownames(tmp_tax) <- tmp_tax$ASV_id
+#build the tree
+datree <-
+  ape::as.phylo.formula(~new_Kingdom_conf_rdp/new_Phylum_conf_rdp/new_Class_conf_rdp/new_Order_conf_rdp/new_Family_conf_rdp/new_Genus_conf_rdp/ASV_id,tmp_tax, collapse = F)
+datree <- ape::compute.brlen(datree)
+
+meco_4tree <- clone(meco_16s)
+rownames(meco_4tree$tax_table) <- meco_4tree$tax_table$ASV_id
+meco_4tree$otu_table <- meco_4tree$otu_table[non_singleton_asv,]
+meco_4tree$otu_table <- meco_4tree$otu_table[more_10pct_prev_asv,]
+
+meco_4tree$tidy_dataset()
+
+phy_with_tree <- file2meco::meco2phyloseq(meco_4tree)
+phy_with_tree@phy_tree <- datree
+tax_table(phy_with_tree) <- as.matrix(tmp_tax)
+
+
+myggtree <- ggtree(phy_with_tree, layout="fan", open.angle=2, branch.length="none")
+myggtree
 ```
 
 
@@ -1987,6 +2104,7 @@ write.csv(meco_16s$sample_table,file = "processed_data/sample_table.csv")
 # -----------------------------------
 # -----------------------------------
 
+# BUILD PLOTS
 #I- Alpha-div
 
 
@@ -2006,48 +2124,85 @@ protox <- mapply(FUN = function(x, y) {
   mydf
 }, x = curve16s, y = as.list(names(curve16s)), SIMPLIFY = FALSE)
 
-
 xy <- do.call(rbind, protox)
 rownames(xy) <- NULL  # pretty
 xy%<>%
   mutate(Sample=samples)%>%
   left_join(meco_16s$sample_table)
 
-
+#Draw rarefaction curve
 rare16s <- ggplot(xy, aes(x = subsample, y = value, group = samples ,color=koppen_clim)) +
-  ggpubr::theme_classic2() +
+  ggpubr::theme_classic2()+
   geom_line()+
   xlab("Nb reads")+
   ylab("ASVs count")+
-  scale_color_manual(values = paletteer::paletteer_d("MetBrewer::Austria"),name="Climatic zone")+
-  theme(text = element_text(face="bold"))
+  scale_color_manual(values = climate_palette,name="Climatic zone")+
+  theme(text = element_text(face="bold"),
+        plot.margin = unit(c(0,0,0,0),units = "lines"),
+        panel.grid.major.y =  element_line(colour = "grey90"))
 
-
-richness_plot <- ggplot(dtmp,aes(x=koppen_clim,y=nb_asvs,color=koppen_clim))+
-  geom_boxplot(outlier.shape = NA)+
-  geom_jitter()+
+#Plot richness boxplot
+richness_plot <- ggplot(meco_16s$sample_table,aes(x=koppen_clim,y=nb_asvs_raref))+
+  geom_boxplot(outlier.shape = NA,aes(fill=koppen_clim))+
+  geom_jitter(position = position_jitter(height = 0,width = .25),aes(fill=koppen_clim))+
   ggpubr::theme_classic2()+
   labs(y="Nb ASVs")+
-  scale_color_manual(values = climate_palette,name="Climatic zone")+
-  theme(axis.text.x = element_text(angle=45,vjust=1,hjust=1),
-        axis.title.x = element_blank(),
-        text = element_text(face="bold"))
+  ylim(layer_scales(rare16s)$y$range$range)+
+  scale_fill_manual(values = climate_palette,name="Climatic zone",guide="none")+
+  ggpubr::theme_classic2()+
+  theme(axis.text = element_blank(),
+        axis.title = element_blank(),
+        text = element_text(face="bold"),
+        axis.line.y = element_blank(),
+        axis.ticks = element_blank(),
+        plot.margin = unit(c(0,0,0,0),units = "lines"),
+        panel.grid.major.y = element_line(colour = "grey90"))
+
+#Perform Kruskal Wallis test
+stat.test <- meco_16s$sample_table%>%
+  rstatix::kruskal_test(nb_asvs_raref ~ koppen_clim) %>%
+  rstatix::add_significance() # NS
+
+#save as docx
+stat.test%>%
+  flextable::flextable()%>%
+  flextable::save_as_docx(path="figures_and_results/tables/richness_koppen_KW.docx")
+
+#combine plots
+p_rare_asv <- rare16s+richness_plot+plot_layout(guides = "collect",width=c(4,1))
+p_rare_asv
 ```
 
 ## Bacterial cell abundance
 
 ```{r}
+#Abundance boxplots
 cyto_plot <-  meco_16s$sample_table%>%
-  ggplot(aes(x=koppen_clim,y=bacg ,color=koppen_clim))+
-  geom_boxplot(outlier.shape = NA)+ #remove outliers shape because they'll be plotted with jitter
-  geom_jitter()+ # plot points over boxplots
+  ggplot(aes(x=koppen_clim,y=xtra_bacg ))+
+  geom_boxplot(outlier.shape = NA,aes(fill=koppen_clim))+ #remove outliers shape because they'll be plotted with jitter
+  geom_jitter(width=.25,aes(fill=koppen_clim))+ # plot points over boxplots
   ggpubr::theme_classic2()+
-  scale_color_manual(values = climate_palette,name="Climatic zone")+
+  scale_fill_manual(values = climate_palette,name="Climatic zone")+
   scale_y_log10()+
   ylab(bquote(bold("Bacterial abundance (cell.g"^-2~")")))+
   theme(text=element_text(face="bold"),
-        axis.text.x = element_text(angle = 45,hjust=1),
-        axis.title.x = element_blank())
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        plot.margin = unit(c(0,0,0,0),units = "lines"),
+        panel.grid.major.y = element_line(colour = "grey90"))
+
+#Perform Kruskal Wallis test
+stat.test <- meco_16s$sample_table%>%
+  rstatix::kruskal_test(xtra_bacg ~ koppen_clim) %>%
+  rstatix::add_significance()
+
+#save as docx
+stat.test%>%
+  flextable::flextable()%>%
+  flextable::save_as_docx(path="figures_and_results/tables/cyto_koppen_KW.docx")
+
+cyto_plot
 ```
 
 ## Relative abundance~Prevalence
@@ -2055,7 +2210,7 @@ cyto_plot <-  meco_16s$sample_table%>%
 Compute average non null relative abundance for each ASVs
 ```{r}
 asv_meanrelab <- 
-  meco_16$otu_table%>%
+  meco_16s$otu_table%>%
   mutate(across(everything(),.fns=~(.x/sum(.))*100))%>% #convert to relative abundance
   mutate(ASV_id=rownames(.))%>% #get asv id
   reshape2::melt()%>% #convert to long form
@@ -2064,26 +2219,30 @@ asv_meanrelab <-
   summarise(mean_relab=mean(value)) # compute mean (non null) relative abundance
 
 #add to tax_table info
-meco_16$tax_table%<>%
+meco_16s$tax_table%<>%
   left_join(asv_meanrelab)
-
+#fixrownames
+rownames(meco_16s$tax_table) <- meco_16s$tax_table$ASV_id
 rm(asv_meanrelab)
 ```
-
 
 ASV relab~ASV prevalence, top 10 Genera (total read numbers) are colored.
 ```{r}
 # Get top 10 genera
 tab <- meco_16s$otu_table 
-tax.lvl <- "Genus"
-genus_tot <-agg.table.taxo(tab = tab, # aggregate my data at the targeted tax level
+tax.lvl <- "Genus_conf_rdp"
+genus_tot <- fct_list$agg.table.taxo(tab = tab, # aggregate my data at the targeted tax level
                            tax.lvl = tax.lvl,
-                           tax.table = meco_16s$tax_table) %>%
+                           tax.table = mutate(meco_16s$tax_table,across(everything(),~gsub("[a-z]__","",.x)))) %>%
   apply(1,sum) %>% # sum the number of reads
   sort %>% # sort in ascending order
   identity
 top_genus <- genus_tot%>%
-  tail(10)
+  tail(n = 11)%>%
+  reshape2::melt()%>%
+  mutate(genus=rownames(.))%>%
+  mutate(genus=ifelse(nchar(genus)<1,"Unidentified",genus))
+  
 
 # data 2 plot
 p_data <-  meco_16s$tax_table%>%
@@ -2091,10 +2250,10 @@ p_data <-  meco_16s$tax_table%>%
   mutate(prevpct=(prev/171)*100)%>% #convert to pct
   mutate(prev_category=cut(prevpct, breaks=c(-Inf,5,10,25, 50, 75, Inf),
                            labels=c("<5","<10","<25","<50","<75","75<")))%>%#split in categories 
-  mutate(Genus_agg=factor(ifelse(Genus%in%top_genus$genus,Genus,
-                                 ifelse(is.na(Genus),"Unidentified","Others"))))%>%
-  mutate(Genus_agg=forcats::fct_relevel("Others", after = Inf))%>%
-  mutate(Genus_agg=forcats::fct_relevel("Unidentified", after = Inf))
+  mutate(genus_agg=factor(ifelse(Genus_conf_rdp%in%top_genus$genus,Genus_conf_rdp,
+                                 ifelse(nchar(Genus_conf_rdp)<1,"Unidentified","Others"))))%>%
+  mutate(genus_agg=forcats::fct_relevel(genus_agg,"Others", after = Inf))%>%
+  mutate(genus_agg=forcats::fct_relevel(genus_agg,"Unidentified", after = Inf))
 
 # create data for plot background
 p_data_rect <- data.frame(xmin=c(0,5,10,25,50,75), 
@@ -2105,7 +2264,7 @@ p_data_rect <- data.frame(xmin=c(0,5,10,25,50,75),
                                                levels = c("<5","<10","<25","<50","<75","75<")))
 
 colorz <-  c(paletteer::paletteer_d("ggthemes::Classic_10"),"lightgrey","#666666")
-names(colorz) <-rev(levels(p_data$genus_agg))
+names(colorz) <-levels(p_data$genus_agg)
 
 #create data for plot annotation
 annot_data <- p_data %>% 
@@ -2118,26 +2277,28 @@ relab_prev_genus <-
   #background
   geom_rect(p_data_rect,mapping=aes(xmin=xmin,xmax=xmax,ymin=ymin,ymax=ymax,fill=prev_category),alpha=.7)+
   #point for ASVs not in top 10 genera 
-  geom_point(filter(p_data,Genus_agg%in%c("Others","Unidentified")),mapping=aes(prevpct,100*(mean_relab),color=Genus_agg),alpha=.5)+
+  geom_point(filter(p_data,genus_agg%in%c("Others","Unidentified")),mapping=aes(prevpct,mean_relab,color=genus_agg),alpha=.5)+
   #point for top 10 genera ASVs 
-  geom_point(filter(p_data,!Genus_agg%in%c("Others","Unidentified")),mapping=aes(prevpct,100*(mean_relab),color=Genus_agg),alpha=1,size=2)+
+  geom_point(filter(p_data,!genus_agg%in%c("Others","Unidentified")),mapping=aes(prevpct,mean_relab,color=genus_agg),alpha=1,size=2)+
   #labels of prev categories
-  ggtext::geom_richtext(annot_data,mapping=aes(x =rowMeans(cbind(c(0,5,10,25,50,75), c(5,10,25,50,75,100))),y=90,
+  geom_label(annot_data,mapping=aes(x =rowMeans(cbind(c(0,5,10,25,50,75), c(5,10,25,50,75,100)))+2,y=80,
                                                label=paste0("n=",effe),
                                                fill=prev_category),
-                        alpha=.9,angle=45,size=2,show.legend = FALSE)+ 
+                        alpha=.9,angle=45,size=4,show.legend = FALSE)+ 
   #color scale
   scale_color_manual(values = colorz,name="Genus")+ #points
   scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="OTUs prevalence")+#background
   guides(fill="none")+ #don't show in legend
   #log relative abundance
-  scale_y_log10(limits=c(0.005,100),breaks=c(.01,.1,1,10))+
+  scale_y_log10(limits=c(.01,100),breaks=c(.01,.1,1,10))+
   #name axes and set theme
   ylab("Mean relative abundance (%)")+
   xlab("OTU prevalence (%)")+
   ggpubr::theme_classic2()+
   scale_x_continuous(expand = c(0.01,0),breaks = c(0,5,10,25, 50, 75,100))+
   theme(text = element_text(face="bold"))
+
+relab_prev_genus
 ```
 
 
@@ -2152,23 +2313,107 @@ df <- meco_16s$otu_table%>% # get otu table
   mutate(variable=forcats::fct_inorder(variable))
 
 p_relab <- (df%>%
-  ggplot(aes(x=variable,y=value,fill=prev_category))+
-  geom_bar(stat="identity",width=1)+
-  scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="OTUs prevalence (%)")+
-  ggpubr::theme_classic2()+
-  scale_y_continuous(expand=c(0,0))+
-  theme(text=element_text(face="bold"),
-        axis.text.x = element_blank(),
-        axis.ticks.x = element_blank(),
-        axis.title.x = element_blank())+
-  ylab("Relative abundance (%)")+
+              ggplot(aes(y=1,x=variable,fill=koppen_clim))+
+              geom_tile()+
+              theme_void()+
+              theme(legend.position = "none",
+                    plot.margin = margin(0,0,0,0,"mm"))+
+              scale_fill_manual(values = climate_palette,name="Climatic zone")+
+              df%>%
+              ggplot(aes(x=variable,y=value,fill=prev_category))+
+              geom_bar(stat="identity",width=1)+
+              scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="OTUs prevalence (%)")+
+              ggpubr::theme_classic2()+
+              scale_y_continuous(expand=c(0,0))+
+              theme(text=element_text(face="bold"),
+                    axis.text.x = element_blank(),
+                    axis.ticks.x = element_blank(),
+                    axis.title.x = element_blank())+
+              ylab("Relative abundance (%)"))+
+  plot_layout(height=c(1,9),guides="collect")
+p_relab
+```
+
+```{r}
+df2 <- 
   df%>%
-  ggplot(aes(y=1,x=variable,fill=koppen_clim))+
-  geom_tile()+
-  theme_void()+
-  theme(legend.position = "none")+
-  scale_fill_manual(values = climate_palette,name="Climatic zone"))+
-  plot_layout(height=c(9,1),guides="collect")
+  group_by(variable,prev_category)%>%
+  summarise(totrelab=sum(value),
+            koppen_clim=unique(koppen_clim))
+
+p_relab2 <- (df2%>%
+              ggplot(aes(x=totrelab,y=variable,fill=prev_category))+
+              geom_bar(stat="identity",width=1)+
+              scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="OTUs prevalence (%)")+
+              ggpubr::theme_classic2()+
+              scale_x_continuous(expand=c(0,0),position = "top")+
+              theme(text=element_text(face="bold"),
+                    axis.text.y = element_blank(),
+                    axis.ticks.y = element_blank(),
+                    axis.title.y = element_blank(),
+                    legend.position = "bottom",
+                    legend.direction = "horizontal",
+                    legend.title.position = "top")+
+              xlab("Relative abundance (%)")+
+               df2%>%
+              ggplot(aes(y=variable,x=1,fill=koppen_clim))+
+              geom_tile()+
+              theme_void()+
+              theme(legend.position = "none",
+                    plot.margin = margin(0,0,0,0,"mm"))+
+              scale_fill_manual(values = climate_palette,name="Climatic zone"))+
+  plot_layout(width=c(9,1),guides="collect")
+p_relab2
+```
+
+```{r}
+df3 <- 
+  df%>%
+  group_by(koppen_clim)%>%
+  mutate(count_clim=length(unique(variable)))%>%
+  group_by(koppen_clim,prev_category)%>%
+  summarise(totrelab=sum(value)/mean(count_clim))
+
+p_relab3 <- (df3%>%
+              ggplot(aes(x=totrelab,y=koppen_clim,fill=prev_category))+
+              geom_bar(stat="identity",width=.8)+
+              scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="OTUs prevalence (%)")+
+              ggpubr::theme_classic2()+
+              scale_x_continuous(expand=c(0,0),position = "top")+
+              theme(text=element_text(face="bold"),
+                    axis.text.y = element_blank(),
+                    axis.ticks.y = element_blank(),
+                    axis.title.y = element_blank(),
+                    legend.position = "bottom",
+                    legend.direction = "horizontal",
+                    legend.title.position = "top")+
+              xlab("Relative abundance (%)")+
+               df2%>%
+              ggplot(aes(y=koppen_clim,x=1,fill=koppen_clim))+
+              geom_tile()+
+              theme_void()+
+              theme(legend.position = "none",
+                    plot.margin = margin(0,0,0,0,"mm"))+
+              scale_fill_manual(values = climate_palette,name="Climatic zone"))+
+  plot_layout(width=c(9,1),guides="collect")
+p_relab3
+```
+
+## Sites with low ubiquists
+
+```{r}
+df%>%
+  filter(prev_category=="75<")%>%
+  group_by(variable)%>%
+  summarise(tot_relab_ubi=sum(value))%>%
+  rename(Sample=variable)%>%
+  left_join(meco_16s$sample_table)%>%
+  mutate(low_ubi=ifelse(tot_relab_ubi<10,"low","high"))%>%
+  select(Sample,koppen_clim,low_ubi,var2use,X,Y)%>%
+  reshape2::melt(id.vars=c("Sample","koppen_clim","low_ubi"))%>%
+  ggplot(aes(x=koppen_clim,
+             fill=low_ubi))+
+  geom_bar()
 ```
 
 ## Upset plot
@@ -2348,6 +2593,7 @@ ACCC
 "
 #combine plot
 upset_plot <- g3+g1+g2+plot_layout(design = layout)&theme(text = element_text(face="bold"))
+upset_plot
 ```
 
 
@@ -2362,9 +2608,9 @@ mtcdR <- meco_16s$tax_table%>%
   mutate(Order=paste0("o__",Order))%>%
   mutate(Family=paste0("f__",Family))%>%
   mutate(Genus=paste0("g__",Genus))%>%
-  unite(lineage,Kingdom,Phylum,Class,Order,Family,Genus,sep = ";")%>%
+  tidyr::unite(lineage,Kingdom,Phylum,Class,Order,Family,Genus,sep = ";")%>%
   select(ASV_id,lineage)%>%
-  mutate(lineage=gsub(";[a-z]__NA.*","",lineage))%>%
+  mutate(lineage=gsub(";[a-z]__;.*$|;[a-z]__$","",lineage))%>%
   left_join(mutate(meco_16s$otu_table,ASV_id=rownames(meco_16s$otu_table)))
 
 # convert to metacoder obj
@@ -2376,7 +2622,7 @@ obj <- metacoder::parse_tax_data(mtcdR,
                                     tax_name = "taxon_name"))
 ```
 
-Compte info to plot
+Compute info to plot
 ```{r}
 ## compute abundance of taxon
 obj$data$tax_abund <- metacoder::calc_taxon_abund(obj, "tax_data",cols = meco_16s$sample_table$Sample)
@@ -2401,7 +2647,7 @@ colorz_rank <- c("#1C1FB5","#3030E6","#6161EE","#8888F2","#CACAFA","#F1F1FF")
 
 obj$data$class_data%<>%
   mutate(rank_number=as.numeric(factor(tax_rank,levels=c("k","p","o","c","f","g"))))%>%
-  mutate(col_rank= colorz_rank[rank_number]))
+  mutate(col_rank= colorz_rank[rank_number])
 ```
 
 Plot metacodeR tree branch colored with prevalence
@@ -2409,22 +2655,21 @@ Plot metacodeR tree branch colored with prevalence
 ## Plot taxonomic tree
 set.seed(3) 
 
-taxo_structree <- heat_tree(obj, 
-          node_label_color=col_rank,
-          node_label_alpha=1,
-          node_label_box_fill="grey",
-          node_label_box_color="black",
-          node_label_box_alpha=.8,
-          node_size=n_obs,
-          edge_color_axis_label = "Prevalence",
-          node_size_axis_label = "Number of ASVs",
-          node_label = ifelse(taxon_indexes %in% to_label, taxon_names, ''),
-          edge_color_range = paletteer::paletteer_d("rcartocolor::Geyser")[c(1,2,3,5,6,7)],
-          edge_color=n_samples,
-          node_label_size_range=c(.025,.025),
-          initial_layout = "re", layout = "da",
-          make_node_legend = FALSE)+
-          theme_void()
+# taxo_structree <- heat_tree(obj,
+#                             node_label_box_fill="lightgrey",
+#                             node_label_color="black",
+#                             node_label_alpha=.8,
+#                             node_size=n_obs,
+#                             edge_color_axis_label = "Prevalence",
+#                             node_size_axis_label = "Number of ASVs",
+#                             node_label = ifelse(taxon_indexes %in% to_label, taxon_names, ''),
+#                             edge_color_range = paletteer::paletteer_d("rcartocolor::Geyser")[c(1,2,3,5,6,7)],
+#                             edge_color=n_samples,
+#                             node_color=col_rank,
+#                             node_label_size_range=c(.025,.025),
+#                             initial_layout = "re", layout = "da",
+#                             make_node_legend = FALSE)
+# taxo_structree
 ```
 
 Plot metacodeR with branch colored in RGB according to climate zones
@@ -2433,11 +2678,11 @@ metadf_RGB <- obj$data$tax_abund%>%
   reshape2::melt(id.vars=c("taxon_id","allreads","prop_reads","tax_rank","tax_name"))%>%
   rename(Sample=variable)%>%
   left_join(mutate(select(meco_16s$sample_table,Sample,koppen_clim),
-                   Sample=Sampl)))%>%
+                   Sample=Sample))%>%
   group_by(taxon_id,koppen_clim)%>%
   summarise(tot_reads=sum(value))%>%
   ungroup()%>%
-  pivot_wider(names_from = koppen_clim,values_from = tot_reads)%>%
+  tidyr::pivot_wider(names_from = koppen_clim,values_from = tot_reads)%>%
   left_join(obj$data$tax_abund)%>%
   group_by(taxon_id)%>%
   mutate(R=`Continental hot summer`/sum(allreads),
@@ -2450,52 +2695,60 @@ obj$data$tax_occ%<>%
   select(1:2)%>%
   left_join(metadf_RGB[,c("taxon_id","Continental cold/Tundra","Continental hot summer","Temperate","allreads" ,"tax_rank","tax_name","prop_reads","rgb_col","R","G","B")])
 
-heat_treergb <- heat_tree(obj, 
-          node_label_color=col_rank,
-          node_label_alpha=1,
-          node_label_box_fill="grey75",
-          node_label_box_color="black",
-          node_label_box_alpha=.8,
-          node_size=n_obs,
-          edge_color_axis_label = "Prevalence",
-          node_size_axis_label = "Number of ASVs",
-          node_label = ifelse(taxon_indexes %in% to_label, taxon_names, ''),
-          edge_color=rgb_col,
-          node_label_size_range=c(.025,.025),
-          initial_layout = "re", layout = "da",
-          make_edge_legend = FALSE,
-          make_node_legend = FALSE)
-
-library(ggtern)
-leg <- ggtern(all.colors, aes(x = B, y = R, z = G)) +
-  geom_point(aes(color = hex), size = 3, shape = 17) +
-  scale_color_identity() +
-  theme_rgbw(14) +
-  scale_L_continuous(breaks = NULL,name = "CH") +
-  scale_T_continuous(breaks = NULL,name = "CC") +
-  scale_R_continuous(breaks = NULL,name = "T") +
-  theme(
-    tern.panel.expand = 0.4,
-    tern.axis.arrow=element_blank(),
-    tern.axis.text.R = element_text(color = "darkgreen",face="bold",size = .25), 
-    tern.axis.text.T = element_text(color = "darkred",face="bold",size = .25),
-    tern.axis.text.L = element_text(color = "darkblue",face="bold",size = .25))
-
-heat_treergb <- heat_treergb+
-  guides(custom = guide_custom(title = "Relative Share", grob = ggplotGrob(leg),
-                               width = grid::unit(10, "lines"),
-                               height = grid::unit(10, "lines")))+
-  theme(aspect.ratio = 1,
-        legend.title = element_text(hjust = 0.5, vjust = -3,face = "bold"),
-        legend.margin = margin(0,0,0,0, unit = "lines"),
-        legend.position = c(0.9, 0.85),
-        legend.background = element_blank())
-
-heat_treergb
+# heat_treergb <- heat_tree(obj, 
+#                           node_label_fill='lightgrey',
+#                           node_label_color="black",
+#                           node_label_alpha=.8,
+#                           node_size=n_obs,
+#                           edge_color_axis_label = "Prevalence",
+#                           node_size_axis_label = "Number of ASVs",
+#                           node_label = ifelse(taxon_indexes %in% to_label, taxon_names, ''),
+#                           edge_color=rgb_col,
+#                           node_color=col_rank,
+#                           node_label_size_range=c(.025,.025),
+#                           initial_layout = "re", layout = "da",
+#                           make_edge_legend = FALSE,
+#                           make_node_legend = FALSE)
+# 
+# all.colors <- expand.grid(R = 0:100, G = 0:100, B = 0:100)
+# all.colors <- all.colors[rowSums(all.colors) == 100, ]
+# all.colors <- all.colors / 100
+# all.colors$hex <- with(all.colors, rgb(R, G, B))
+# 
+# library(ggtern)
+# leg <- ggtern(all.colors, aes(x = B, y = R, z = G)) +
+#   geom_point(aes(color = hex), size = 3, shape = 17) +
+#   scale_color_identity() +
+#   theme_rgbw(14) +
+#   scale_L_continuous(breaks = NULL,name = "CH") +
+#   scale_T_continuous(breaks = NULL,name = "CC") +
+#   scale_R_continuous(breaks = NULL,name = "T") +
+#   theme(
+#     tern.panel.expand = 0.4,
+#     tern.axis.arrow=element_blank(),
+#     tern.axis.text.R = element_text(color = "darkgreen",face="bold",size = .25), 
+#     tern.axis.text.T = element_text(color = "darkred",face="bold",size = .25),
+#     tern.axis.text.L = element_text(color = "darkblue",face="bold",size = .25),
+#     plot.background = element_blank(),
+#     legend.background = element_blank(),
+#     panel.background = element_blank())
+# 
+# heat_treergb <- heat_treergb+
+#   guides(custom = guide_custom(title = "Relative Share", grob = ggplotGrob(leg),
+#                                width = grid::unit(8, "lines"),
+#                                height = grid::unit(8, "lines")))+
+#   theme(aspect.ratio = 1,
+#         legend.title = element_text(hjust = 0.5, vjust = -3,face = "bold"),
+#         legend.margin = margin(0,0,0,0, unit = "lines"),
+#         legend.position = "inside",
+#         legend.position.inside = c(0.9, 0.9),
+#         legend.background = element_blank())
+# 
+# heat_treergb
 ```
 
 ```{r}
-devtool::unload("ggtern")
+# devtools::unload("ggtern")
 ```
 
 #II- Beta-div
@@ -2506,7 +2759,7 @@ Plot taxa relative abundance overall (donut) and per sample (bar) at different t
 ```{r}
 bar_list <- NULL
 donut_list <- NULL
-for( i in c("Phylum","Class","Order","Family","Genus")){
+for( i in c("Phylum_conf_rdp","Class_conf_rdp","Order_conf_rdp","Family_conf_rdp","Genus_conf_rdp")){
   
   tmp16s <- microeco::clone(meco_16s) # get data
   tmp16s$sample_table %<>%
@@ -2543,7 +2796,7 @@ for( i in c("Phylum","Class","Order","Family","Genus")){
   plot_data1$Taxonomy %<>% factor(., levels = c(use_taxanames, "Others","Unidentified"))
   plot_data1$label <- paste0(round(plot_data1$Abundance, 1),"%")
   
-  if(i=="Genus"){ # gat a specific color palette for genera 
+  if(i=="Genus_conf_rdp"){ # gat a specific color palette for genera 
     colorz <-  c(paletteer::paletteer_d("ggthemes::Classic_10"),"lightgrey","#666666")
     names(colorz) <-rev(levels(p_data$genus_agg))
   }else{
@@ -2567,7 +2820,7 @@ for( i in c("Phylum","Class","Order","Family","Genus")){
   tmp16s2 <- trans_abund$new(tmp16s,taxrank = i,ntaxa = 8)
   plot_data2 <- tmp16s2$data_abund
   plot_data2%<>%
-    mutate(Taxonomy=ifelse(Taxonomy=="NA","Unidentified",Taxonomy))
+    mutate(Taxonomy=ifelse(Taxonomy=="","Unidentified",Taxonomy))
   plot_data2$Taxonomy[!plot_data2$Taxonomy %in% c(use_taxanames,"Unidentified")] <- "Others"
   plot_data2$Taxonomy %<>% factor(., levels = rev(c(use_taxanames, "Others","Unidentified")))
 
@@ -2582,7 +2835,7 @@ for( i in c("Phylum","Class","Order","Family","Genus")){
     geom_bar(stat = "identity",width=1,position='stack',key_glyph="rect")+
     scale_fill_manual(values =  colorz,
                       guide = guide_legend(reverse = TRUE),
-                      name=i)+
+                      name=gsub("_conf_rdp","",i))+
     scale_y_continuous(expand = c(0,0),breaks = c(0,25,50,75,100))+
     ylab("Relative abundance (%)")+
     theme(text=element_text(face="bold"),
@@ -2592,7 +2845,7 @@ for( i in c("Phylum","Class","Order","Family","Genus")){
           plot.margin = margin(0,0,0,0))+ 
     tmp16s$sample_table%>%
     ggplot(aes(x=Sample,y=1,fill=koppen_clim))+
-    geom_tile()+
+    geom_tile(show.legend=F)+
     scale_fill_manual(values = climate_palette,name="Climatic zone")+
     theme_void()+
     theme(text=element_text(face="bold"),
@@ -2604,6 +2857,11 @@ for( i in c("Phylum","Class","Order","Family","Genus")){
 }
 ```
 
+```{r}
+wrap_plots(list(bar_list$Class,bar_list$Genus))
+```
+
+
 ## PCOA
 
 ```{r}
@@ -2611,15 +2869,15 @@ for( i in c("Phylum","Class","Order","Family","Genus")){
 StatCentSeg <- ggplot2::ggproto("StatCentSeg", Stat,
                                 compute_group = function(data, scales, params,
                                                          cfun=median) {
-                                  data$xend <- cfun(data$x)
-                                  data$yend <- cfun(data$y)
-                                  return(data)
-                                },
-                                required_aes = c("x", "y")
+    data$xend <- cfun(data$x)
+    data$yend <- cfun(data$y)
+    return(data)
+  },
+  required_aes = c("x", "y")
 )
 stat_centseg <- function(mapping = NULL, data = NULL, geom = "segment",
-                         position = "identity", na.rm = FALSE, show.legend = NA, 
-                         inherit.aes = TRUE, cfun=median, ...) {
+                       position = "identity", na.rm = FALSE, show.legend = NA, 
+                       inherit.aes = TRUE, cfun=median, ...) {
   layer(
     stat = StatCentSeg, data = data, mapping = mapping, geom = geom, 
     position = position, show.legend = show.legend, inherit.aes = inherit.aes,
@@ -2627,13 +2885,28 @@ stat_centseg <- function(mapping = NULL, data = NULL, geom = "segment",
   )
 }
 
+tax.lvl <- "Class_conf_rdp"
+class_tot <- fct_list$agg.table.taxo(tab = tab, # aggregate my data at the targeted tax level
+                           tax.lvl = tax.lvl,
+                           tax.table = mutate(meco_16s$tax_table,across(everything(),~gsub("[a-z]__","",.x)))) %>%
+  apply(1,sum) %>% # sum the number of reads
+  sort %>% # sort in ascending order
+  identity
+top_class <- class_tot%>%
+  tail(n = 9)%>%
+  reshape2::melt()%>%
+  mutate(class=rownames(.))%>%
+  mutate(class=ifelse(nchar(class)<1,"Unidentified",class))
 
 ```
 
 Run the PCOA
 ```{r}
 # run pcoa
+meco_16s$tax_table%<>%
+  mutate(prev=rowSums(meco_16s$otu_table>0))
 dtmp <- microeco::clone(meco_16s) #clone data
+dtmp$otu_table <- dtmp$otu_table[rowSums(dtmp$otu_table)>1,]#remove singletons
 dtmp$otu_table <- t(labdsv::hellinger(t(dtmp$otu_table)))  #perform hellinger transformation
 orditmp <- phyloseq::ordinate(file2meco::meco2phyloseq(dtmp), "PCoA", "horn") # run pcoa with Morisita-Horn distance
 
@@ -2642,6 +2915,50 @@ expl1 <- orditmp$values$Relative_eig[1] #axis1
 expl2 <- orditmp$values$Relative_eig[2] #axis2
 expl3 <- orditmp$values$Relative_eig[3] #axis3
 ```
+
+###Samples
+
+Test for differences in communities between climate regions using permanova
+```{r}
+#check the hypothesis that dispersion is roughly the same between my groups in multivariate space
+dis <- vegan::vegdist(labdsv::hellinger(t(meco_16s$otu_table)),method="horn") #we create a distance matrix between our individuals
+mod <- vegan::betadisper(dis,meco_16s$sample_table$koppen_clim) #we calculate the multivariate dispersions i.e. average distance to centroids
+p_dist2grpcentroid <- 
+mod$distances%>%
+  reshape2::melt()%>%
+  mutate(Sample=rownames(.))%>%
+  left_join(meco_16s$sample_table)%>%
+  ggplot(aes(fill=koppen_clim,x=value))+
+  geom_density(alpha=.5)+
+  xlab("Distance to group centroïd")+
+  ggpubr::theme_classic2()+
+  scale_x_continuous(expand = c(0,0))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_fill_manual(values = climate_palette,name="Climatic zone")+
+  theme(text = element_text(face = "bold"))
+p_dist2grpcentroid
+```
+
+We see that distance to group centroïd is roughly the same so that it's ok to perform a permanova to test for shifts in group centroids between climatic zones.
+
+```{r}
+#run permanova
+adon.res1 <- vegan::adonis2(labdsv::hellinger(t(meco_16s$otu_table))~meco_16s$sample_table$koppen_clim,
+                            perm = 1000, na.rm = T, method = "horn",p.adjust.methods="holm" ) 
+adon.res1%>% #save
+  flextable::flextable()%>%
+  flextable::save_as_docx(path=paste0("figures_and_results/tables/permanova_comunities.docx"))
+
+pair.adon.res1 <- pairwiseAdonis::pairwise.adonis(labdsv::hellinger(t(meco_16s$otu_table)), #run pairwise permanova
+                                                  meco_16s$sample_table$koppen_clim,
+                                                  p.adjust.m = "holm",
+                                                  sim.method = "horn", perm=1000)
+pair.adon.res1%>% #save
+  dplyr::select(-sig)%>%
+  flextable::flextable(cwidth = c(1,.5,1,1,1,1,1))%>%
+  flextable::save_as_docx(path=paste0("figures_and_results/tables/permanova_comunities_pairwise.docx"))
+```
+
 
 Plot Sample PCOA
 ```{r}
@@ -2655,37 +2972,136 @@ meco_16s$sample_table%<>%
          dim2=dim2,
          dim3=dim3)
 # create df and merge with sample info
-df_ordihorn <- data.frame(dim1,
-                          dim2,
-                          dim3,
-                          Sample)
-df_ordihorn%<>%left_join(meco_16s$sample_table)
 
+df_ordihorn <- meco_16s$sample_table
+df_ordihorn%<>%
+  group_by(koppen_clim)%>%
+  mutate(medx=median(dim1), #median of the coordinates
+         medy=median(dim2),
+         medy3=median(dim3))
 # plot Sample PCoA
 pcoa_horn <- ggplot(df_ordihorn,aes(x=dim1,y=dim2,color=koppen_clim))+
-  geom_point()+
-  theme_classic()+
+  stat_centseg()+
+  # add point corresponding to class median position
+  geom_point(mapping=aes(medx,medy,
+                         color=koppen_clim), #bigger size for top 10 classes
+             alpha=.5,shape=21,fill="white",key_glyph=draw_key_point, stroke = 1,size=3)+
   ylab(paste0("Axis 2 (",round(expl2,digits = 3)*100,"%)"))+
   xlab(paste0("Axis 1 (",round(expl1,digits = 3)*100,"%)"))+
-  ggConvexHull::geom_convexhull(aes(fill = koppen_clim, color = koppen_clim),alpha=0.2)+
+  # ggConvexHull::geom_convexhull(aes(fill = koppen_clim, color = koppen_clim),alpha=0.2)+
   geom_vline(xintercept=0,lty=2)+
   geom_hline(yintercept=0,lty=2)+
   scale_color_manual(values = climate_palette,name="Climatic zone")+
   scale_fill_manual(values = climate_palette,name="Climatic zone")+
-  theme(text=element_text(face="bold"))
+  theme_bw()+
+  theme(text=element_text(face="bold"),
+        panel.grid = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank())
 
 pcoa_horn13 <- ggplot(df_ordihorn,aes(x=dim1,y=dim3,color=koppen_clim))+
-  geom_point()+
-  theme_classic()+
+  stat_centseg()+
+  # add point corresponding to class median position
+  geom_point(mapping=aes(medx,medy3,
+                         color=koppen_clim), #bigger size for top 10 classes
+             alpha=.5,shape=21,fill="white",key_glyph=draw_key_point, stroke = 1,size=3)+
+  theme_bw()+
+  theme(text=element_text(face="bold"),
+        panel.grid = element_blank())+
   ylab(paste0("Axis 3 (",round(expl3,digits = 3)*100,"%)"))+
   xlab(paste0("Axis 1 (",round(expl1,digits = 3)*100,"%)"))+
-  ggConvexHull::geom_convexhull(aes(fill = koppen_clim, color = koppen_clim),alpha=0.2)+
+  # ggConvexHull::geom_convexhull(aes(fill = koppen_clim, color = koppen_clim),alpha=0.2)+
   geom_vline(xintercept=0,lty=2)+
   geom_hline(yintercept=0,lty=2)+
   scale_color_manual(values = climate_palette,name="Climatic zone")+
-  scale_fill_manual(values = climate_palette,name="Climatic zone")+
-  theme(text=element_text(face="bold"))
+  scale_fill_manual(values = climate_palette,name="Climatic zone")
+
+
+
+# Axis bxplot
+axis1 <- df_ordihorn%>%
+  mutate(has_enzyme=ifelse(is.na(xtra_BG),"A","Z"))%>% #dumb var to put NA behind on plot
+  arrange(has_enzyme,xtra_BG,nb_asvs_raref)%>% # arrange by mean relab so that ASVs with high mean relabs are plotted last
+  ggplot(aes(y=koppen_clim,x=dim1,fill=koppen_clim))+ #plot coordinates according to classes
+  geom_boxplot(outlier.shape = NA)+
+  geom_point(position = position_jitter(width = 0,height = .1), #no width jitter to keep coordinates correspondance
+             aes(color=as.numeric(xtra_BG),size=as.numeric(nb_asvs_raref)),#color according to meanrelab and size =prev
+             alpha=.8)+
+  scale_fill_manual(values=climate_palette,name="Class",guide="none")+
+  scale_color_gradientn(colours = paletteer::paletteer_d("rcartocolor::DarkMint"),name=bquote(bold("BG activity (nmol.h"^-1~".g"[DM]~")")))+
+  scale_size_continuous(name="Prevalence",range = c(1,4))+
+  #set lims exactly as those of pcoa
+  xlim(layer_scales(pcoa_horn)$x$range$range)+
+  #set theme
+  theme_bw()+
+  theme(text=element_text(face="bold"),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid = element_blank())+
+  geom_vline(xintercept=0,lty=2)
+
+
+axis2 <-  df_ordihorn%>%
+  mutate(has_enzyme=ifelse(is.na(xtra_BG),"A","Z"))%>% #dumb var to put NA behind on plot
+  arrange(has_enzyme,xtra_BG,nb_asvs_raref)%>% # arrange by mean relab so that ASVs with high mean relabs are plotted last
+  ggplot(aes(x=koppen_clim,y=dim2,fill=koppen_clim))+ #plot coordinates according to classes
+  geom_boxplot(outlier.shape = NA)+
+  geom_point(position = position_jitter(height = 0,width = .1), #no width jitter to keep coordinates correspondance
+             aes(color=as.numeric(xtra_BG),size=as.numeric(nb_asvs_raref)),#color according to meanrelab and size =prev
+             alpha=.8)+
+  scale_fill_manual(values=climate_palette,name="Class",guide="none")+
+  scale_color_gradientn(colours = paletteer::paletteer_d("rcartocolor::DarkMint"),name=bquote(bold("BG activity (nmol.h"^-1~".g"[DM]~")")))+
+  scale_size_continuous(name="Prevalence",range = c(1,4))+
+  #set lims exactly as those of pcoa
+  ylim(layer_scales(pcoa_horn)$y$range$range)+
+  #set theme
+  theme_bw()+
+  theme(text=element_text(face="bold"),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.grid = element_blank())+
+  geom_hline(yintercept=0,lty=2)
+
+axis3 <- df_ordihorn%>%
+  mutate(has_enzyme=ifelse(is.na(xtra_BG),"A","Z"))%>% #dumb var to put NA behind on plot
+  arrange(has_enzyme,xtra_BG,nb_asvs_raref)%>% # arrange by mean relab so that ASVs with high mean relabs are plotted last
+  ggplot(aes(x=koppen_clim,y=dim3,fill=koppen_clim))+ #plot coordinates according to classes
+  geom_boxplot(outlier.shape = NA)+
+  geom_point(position = position_jitter(height = 0,width = .1), #no width jitter to keep coordinates correspondance
+             aes(color=as.numeric(xtra_BG),size=as.numeric(nb_asvs_raref)),#color according to meanrelab and size =prev
+             alpha=.8)+
+  scale_fill_manual(values=climate_palette,name="Class",guide="none")+
+  scale_color_gradientn(colours = paletteer::paletteer_d("rcartocolor::DarkMint"),name=bquote(bold("BG activity (nmol.h"^-1~".g"[DM]~")")))+
+  scale_size_continuous(name="Prevalence",range = c(1,4))+
+  #set lims exactly as those of pcoa
+  ylim(layer_scales(pcoa_horn13)$y$range$range)+
+  #set theme
+  theme_bw()+
+  theme(text=element_text(face="bold"),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.grid = element_blank())+
+  geom_hline(yintercept=0,lty=2)
+
+#compose plot
+pcoasmpfull <- (axis1+plot_spacer()+pcoa_horn+axis2+pcoa_horn13+axis3)+
+  #set layout
+  plot_layout(guides="collect",heights=c(2,4,4),widths = c(4,2))&
+  # set theme
+  theme(plot.margin = unit(c(0, 0, 0, 0), "null"),
+        panel.spacing = unit(c(0, 0, 0, 0), "null"),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        legend.background = element_blank())
+
+pcoasmpfull
 ```
+
+### Taxa
 
 Now plot taxa pcoa
 ```{r}
@@ -2695,40 +3111,95 @@ pordi_asv2 <-  phyloseq::plot_ordination(file2meco::meco2phyloseq(dtmp), orditmp
 
 #create dataframe
 df <- pordi_asv$data%>%
-  mutate(nb_reads=rowSums(meco_16s$otu_table))%>% #compute number of reads
+  mutate(nb_reads=rowSums(meco_16s$otu_table[rowSums(meco_16s$otu_table)>1,]))%>% #compute number of reads
   arrange(prev)%>% #order by prevalence
   mutate(ASV_id=forcats::fct_inorder(ASV_id))%>% #level factor
   left_join(select(pordi_asv2$data,c(2,3)))%>% #add axis 3
   group_by(Class)%>% # groupby class
   mutate(maxprev=max(prev), # prevalence of the most prevalent ASV
-         propreads=sum(nb_reads)/sum(meco_16s$otu_table), # proportion of total reads
+         propreads=sum(nb_reads)/sum(meco_16s$otu_table[rowSums(meco_16s$otu_table)>1,]), # proportion of total reads
          medx=median(Axis.1), #median of the coordinates
          medy=median(Axis.2),
          medy3=median(Axis.3))%>%
   ungroup()%>%
-  mutate(class2plot=ifelse(Class%in%donut_list$Class$data$Taxonomy[-c(1:2)],Class,"Others"))%>% # Keep only class that we want and tag the rest as "Others"
-  mutate(is2plot=ifelse(Class%in%donut_list$Class$data$Taxonomy[-c(1:2)],'yup',"nope"))%>% # Create variable saying if to plot or "others"
+  mutate(class2plot=ifelse(Class%in%top_class$class[-c(which(top_class$class=="Unidentified"))],Class,"Others"))%>% # Keep only class that we want and tag the rest as "Others"
+  mutate(is2plot=ifelse(Class%in%top_class$class[-c(which(top_class$class=="Unidentified"))],'yup',"nope"))%>% # Create variable saying if to plot or "others"
   mutate(class2plot=forcats::fct_relevel(class2plot,"Others"))%>% #place Others as first factor
   arrange(class2plot) # arrange so that the dots are drawn in right order
+```
 
+
+Test significance of differences between taxa
+```{r}
+dperm_taxa <- df%>%
+  select(Axis.1,Axis.2,Axis.3,class2plot)%>%
+  filter(class2plot!="Others")
+  
+#check the hypothesis that dispersion is roughly the same between my groups in multivariate space
+dis <- vegan::vegdist(dperm_taxa[,c(1:3)],method="euclidean") #we create a distance matrix between our individuals
+mod <- vegan::betadisper(dis,dperm_taxa$class2plot) #we calculate the multivariate dispersions i.e. average distance to centroids
+
+p_dist2grpcentroid <- 
+  mod$distances%>%
+  reshape2::melt()%>%
+  mutate(ASV_id=filter(df,class2plot!="Others")$ASV_id)%>%
+  left_join(df)%>%
+  ggplot(aes(fill=class2plot,x=value,color=class2plot))+
+  geom_density(alpha=.4)+
+  xlab("Distance to group centroïd")+
+  ggpubr::theme_classic2()+
+  scale_x_continuous(expand = c(0,0))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_fill_manual(values=c(paletteer::paletteer_d("MoMAColors::Klein")[1:8]),name="Class")+
+  scale_color_manual(values=c(paletteer::paletteer_d("MoMAColors::Klein")[1:8]),name="Class")+
+  theme(text = element_text(face = "bold"))+
+  guides(fill=guide_legend(override.aes = list(alpha=1)))
+
+p_dist2grpcentroid
+```
+We see that distance to group centroïd is roughly homogeneousso that it's ok to perform a permanova to test for shifts in group centroids between climatic zones.
+
+```{r}
+#run permanova
+adon.res1 <- vegan::adonis2(dperm_taxa[,c(1:3)]~dperm_taxa$class2plot,
+                            perm = 1000, na.rm = T, method = "euclidean",p.adjust.methods="holm" ) 
+adon.res1%>% #save
+  flextable::flextable()%>%
+  flextable::save_as_docx(path=paste0("figures_and_results/tables/permanova_taxa.docx"))
+
+pair.adon.res1 <- pairwiseAdonis::pairwise.adonis(dperm_taxa[,c(1:3)], #run pairwise permanova
+                                                  dperm_taxa$class2plot,
+                                                  p.adjust.m = "holm",
+                                                  sim.method = "euclidean", perm=1000)
+pair.adon.res1%>% #save
+  dplyr::select(-sig)%>%
+  flextable::flextable(cwidth = c(1,.5,1,1,1,1,1))%>%
+  flextable::save_as_docx(path=paste0("figures_and_results/tables/permanova_comunities_pairwise.docx"))
+```
+
+
+
+```{r}
 #Plot
 #Axis 1&2
 pcoatax_starplot <- 
-  ggplot(df)+
+  ggplot()+
   #Star plot
   stat_centseg(df, mapping=aes(Axis.1,Axis.2,color=class2plot,fill=Class), #dummy fill arg to get proper grouping
                alpha=.5)+
-  scale_fill_manual(values=rep("black", 30), guide = "none")+ #dummy sale fill
+  scale_fill_manual(values=rep("black", 80), guide = "none")+ #dummy sale fill
   # add point corresponding to class median position
   geom_point(df,mapping=aes(medx,medy,
                             color=class2plot, #color class (10 top classes - others in black)
                             size=is2plot), #bigger size for top 10 classes
              alpha=.5,shape=21,fill="white",key_glyph=draw_key_point, stroke = 1)+
   # palettes
-  scale_color_manual(values=rev(c(paletteer_d("MoMAColors::Klein")[1:10],"black")),name="Class")+
+  scale_color_manual(values=c("black",paletteer::paletteer_d("MoMAColors::Klein")[1:8]),
+                     name="Class")+
   scale_size_manual(values=c(2,4),guide = 'none')+ 
-  guides(color = guide_legend(override.aes = list(alpha = 1,
-                                                  fill=rev(c(paletteer_d("MoMAColors::Klein")[1:10],"black")))))+
+  guides(color = guide_legend(reverse = TRUE,
+                              override.aes = list(alpha = 1,
+                                                  fill=rev(c("black",paletteer::paletteer_d("MoMAColors::Klein")[1:8])))))+
   # add lines and axis names
   geom_vline(xintercept=0,lty=2)+
   geom_hline(yintercept=0,lty=2)+
@@ -2748,17 +3219,18 @@ pcoatax_starplot13 <-
   #Star plot
   stat_centseg(df, mapping=aes(Axis.1,Axis.3,color=class2plot,fill=Class), #dummy fill arg to get proper grouping
                alpha=.5)+
-  scale_fill_manual(values=rep("black", 30), guide = "none")+ #dummy sale fill
+  scale_fill_manual(values=rep("black", 80), guide = "none")+ #dummy sale fill
   # add point corresponding to class median position
   geom_point(df,mapping=aes(medx,medy3,
                             color=class2plot, #color class (10 top classes - others in black)
                             size=is2plot), #bigger size for top 10 classes
              alpha=.5,shape=21,fill="white",key_glyph=draw_key_point, stroke = 1)+
   # palettes
-  scale_color_manual(values=rev(c(paletteer_d("MoMAColors::Klein")[1:10],"black")),name="Class")+
+  scale_color_manual(values=c("black",paletteer::paletteer_d("MoMAColors::Klein")[1:8]),name="Class")+
   scale_size_manual(values=c(2,4),guide = 'none')+ 
-  guides(color = guide_legend(override.aes = list(alpha = 1,
-                                                  fill=rev(c(paletteer_d("MoMAColors::Klein")[1:10],"black")))))+
+  guides(color = guide_legend(reverse = T,
+                              override.aes = list(alpha = 1,
+                                                  fill=rev(c("black",paletteer::paletteer_d("MoMAColors::Klein")[1:8])))))+
   # add lines and axis names
   geom_vline(xintercept=0,lty=2)+
   geom_hline(yintercept=0,lty=2)+
@@ -2779,7 +3251,7 @@ axis1 <- df%>%
   geom_point(position = position_jitter(width = 0,height = .1), #no width jitter to keep coordinates correspondance
              aes(color=as.numeric(mean_relab),size=as.numeric(prev)),#color according to meanrelab and size =prev
              alpha=.8)+
-  scale_fill_manual(values=rev(paletteer_d("MoMAColors::Klein")[1:10]),name="Class",guide="none")+
+  scale_fill_manual(values=c(paletteer::paletteer_d("MoMAColors::Klein")[1:8]),name="Class",guide="none")+
   scale_color_gradientn(colors = paletteer::paletteer_d("MoMAColors::Exter"),name="Mean relative abundance (%)")+
   scale_size_continuous(name="Prevalence",range = c(1,4))+
   #set lims exactly as those of pcoa
@@ -2803,7 +3275,7 @@ axis2 <- df%>%
              aes(color=as.numeric(mean_relab),size=as.numeric(prev)),
              alpha=.8)+
   theme_bw()+
-  scale_fill_manual(values=rev(paletteer_d("MoMAColors::Klein")[1:10]),name="Class",guide="none")+
+  scale_fill_manual(values=paletteer::paletteer_d("MoMAColors::Klein")[1:8],name="Class",guide="none")+
   scale_color_gradientn(colors = paletteer::paletteer_d("MoMAColors::Exter"),name="Mean relative abundance (%)")+
   ylim(layer_scales(pcoatax_starplot)$y$range$range)+
   scale_size_continuous(name="Prevalence",range = c(1,4))+
@@ -2821,7 +3293,7 @@ axis3 <- df%>%
   geom_boxplot(outlier.shape = NA)+
   geom_point(position = position_jitter(width = .1,height = 0),aes(color=as.numeric(mean_relab),size=as.numeric(prev)),alpha=.8)+
   theme_bw()+
-  scale_fill_manual(values=rev(paletteer_d("MoMAColors::Klein")[1:10]),name="Class",guide="none")+
+  scale_fill_manual(values=paletteer::paletteer_d("MoMAColors::Klein")[1:8],name="Class",guide="none")+
   scale_color_gradientn(colors = paletteer::paletteer_d("MoMAColors::Exter"),name="Mean relative abundance (%)")+
   ylim(layer_scales(pcoatax_starplot13)$y$range$range)+
   scale_size_continuous(name="Prevalence",range = c(1,4))+
@@ -2855,11 +3327,11 @@ dvpcom <- t(meco_16s$otu_table)%>%
   arrange(Sample)%>%
   mutate(Sample=forcats::fct_inorder(Sample))
 
-dvpenv <- meco_16s$sample_table[,c("Sample","ph",var_lt,"height")]%>%
+dvpenv <- meco_16s$sample_table[,c("Sample",var2use)]%>%
   arrange(Sample)%>%
   mutate(Sample=forcats::fct_inorder(Sample))
 
-dvpmems <- - meco_16s$sample_table%>%
+dvpmems <- meco_16s$sample_table%>%
   select(c(Sample,starts_with("MEM")))%>%
   arrange(Sample)%>%
   mutate(Sample=forcats::fct_inorder(Sample))
@@ -2953,18 +3425,35 @@ gdm_formated <- gdm::formatsitepair(bioData = gdm_biodata, # create data in the 
                                         predData = gdm_preddata,
                                         distPreds =list(mat_geo_gdm))
 
-gdm_fitted <- gdm::gdm(gdm_formated_tmp, # fit gdm
+gdm_fitted <- gdm::gdm(gdm_formated, # fit gdm
                        geo = F) # geo is F because we gave our own geodist matrix
 ```
 
+
 Investigate results
 ```{r}
-gdm::summary(gdm_fitted)
+summary(gdm_fitted)
+# pct explained deviance: 22.141
+```
+
+Test predictors significance
+```{r}
+gdm_varimp <- gdm::gdm.varImp(gdm_formated,geo = F)
 ```
 
 
-Plot GDM results
+Plot GDM splines
 ```{r}
+# get predictor significance
+gdm_pred_signif <- gdm_varimp$`Predictor p-values`%>%
+  mutate(Var2=gsub("_[a-z]{2}","",rownames(.)))%>%
+  rename(pval=`All predictors`)%>%
+  mutate(issignif=ifelse(pval<0.05,"yup","nope"))
+
+gdm_pred_signif%>%
+  flextable::flextable()%>%
+  flextable::save_as_docx(path="figures_and_results/tables/gdm_significance.docx")
+
 # get spline data
 gdm_spline_data <- gdm::isplineExtract(gdm_fitted)
 
@@ -2979,7 +3468,8 @@ dgdm_var <- gdm_spline_data$x%>% # get variable variation range
   left_join(names_df_clean)%>%  #join clean names
   mutate(midname=ifelse(is.na(midname),"Geographic distance",midname))%>% #rename
   mutate(midname=forcats::fct_relevel(midname,unique(names_df_clean$midname)))%>% #relevel
-  filter(Var2%in%gsub("_[a-z]{2}","",names(which(colSums(gdm_spline_data$y)!=0))))
+  filter(Var2%in%gsub("_[a-z]{2}","",names(which(colSums(gdm_spline_data$y)!=0))))%>%
+  left_join(gdm_pred_signif)
 
 #plot variable spline
 gdm_plot_var <- dgdm_var %>%
@@ -2990,23 +3480,60 @@ gdm_plot_var <- dgdm_var %>%
   ungroup()%>%
   arrange(desc(mxy))%>% # arrange by maximal value
   mutate(midname=forcats::fct_inorder(midname))%>% # order levels by max value
-  ggplot(aes(x=valuexn, y=valuey,color=midname))+ #plot lines
+  ggplot(aes(x=valuexn, y=valuey,color=midname,lty=issignif))+ #plot lines
   geom_line(linewidth=1.5)+
   theme_bw()+
   scale_color_manual(values=paletteer::paletteer_d("nationalparkcolors::Acadia"))+
-  guides(color=guide_legend(ncol=3))+
+  scale_linetype_manual(values=c(2,1),guide="none")+
+  guides(color=guide_legend(ncol=3,position = "inside"))+
   scale_y_continuous(expand = c(0,0),limits = c(0,1))+
   scale_x_continuous(expand = c(0,0))+
   xlab("0-1 scaled variables")+
   ylab("GDM effect")+
-  theme(legend.position = c(.5,.9),
+  theme(legend.position.inside = c(.5,.9),
+        axis.text.x = element_text(angle=45,hjust = 1),
+        text=element_text(face="bold"),
         legend.background = element_rect(color='black'),
         legend.title = element_blank())
-
-#plot variable range
-
-
 ```
+
+plot non transformed predictor distribution
+```{r}
+#get pairwise distance (m)
+geodist <- mat_geo_gdm[,-1]%>%
+  reshape2::melt()%>%
+  select(value)
+
+#plot
+gdm_pred_range <- meco_16s$sample_table%>%
+  select(all_of(var2use))%>% #get satellite variable
+  reshape2::melt()%>%
+  mutate(Var2=gsub("_lt","",variable))%>%
+  select(-variable)%>%
+  rbind(data.frame(Var2="Geographic distance",value=geodist))%>% #add pairwise distances
+  left_join(names_df_clean)%>% #add cleannames
+  mutate(midname=ifelse(is.na(midname),"Geographic distance",midname))%>%
+  filter(midname%in%gdm_plot_var$data$midname)%>% #remove var with 0 splines in gdm
+  mutate(value=as.numeric(value))%>%
+  filter(midname%in%gdm_plot_var$data$midname)%>%
+  mutate(midname=forcats::fct_relevel(midname,
+                                    levels(gdm_plot_var$data$midname)))%>%
+  mutate(midname=forcats::fct_recode(midname,`Pairwise Geographic distance`="Geographic distance"))%>%
+  ggplot(aes(x=value,fill=midname))+
+  geom_histogram()+
+  theme_bw()+
+  scale_fill_manual(values=paletteer::paletteer_d("nationalparkcolors::Acadia"))+
+  facet_wrap(~midname,scales = "free",ncol = 1)+
+  theme(text=element_text(face="bold"),
+        axis.title = element_blank(),
+        legend.position = "none")
+```
+
+```{r}
+#plot variable range
+gdm_plot_var+gdm_pred_range
+```
+
 
 Plot prediction versus observation of the GDM
 ```{r}
@@ -3032,47 +3559,61 @@ gdm_plot_pred <-
   ggplot()+
   geom_point(dgdm_pred,mapping=aes(x=eco,
                                    y=obs,
-                                   color=density_ecoobs))+
-  geom_line(data=df_over,mapping=aes(x=x,y=y),color="#7b3700",lwd=1.5)+
+                                   color=density_ecoobs),size=1)+
+  geom_line(data=df_over,mapping=aes(x=x,y=y),color="#BCB584",lwd=1.5)+
   ylim(c(0,1))+ 
   scale_color_gradientn(colors = paletteer::paletteer_d("fishualize::Acanthostracion_polygonius"),
                         name="Density")+
   xlab("Ecological distance")+
   ylab("Observed dissimilarity")+
   ggpubr::theme_classic2()+
-  theme(legend.position = c(.8,.25),
-        legend.background = element_rect(color="black"))+
+  theme(legend.position = c(.9,.25),
+        legend.background = element_rect(color="black"),
+        legend.title = element_text( size=7),
+        legend.text=element_text(size=7),
+        legend.key.height = unit(8, 'pt'),
+        legend.key.width = unit(4,"pt"))+
   #observed biodistance vs pred
-  ggplot(prd_df,
+  ggplot(dgdm_pred,
          aes(x=pred,
              y=obs,
              color=density_obspred))+
-  geom_point()+
-  geom_abline (slope=1, color="#7b3700",lwd=1.5)+
+  geom_point(size=1)+
+  geom_abline (slope=1, color="#BCB584",lwd=1.5)+
   scale_color_gradientn(colors = paletteer::paletteer_d("fishualize::Acanthostracion_polygonius"),
                         name="Density")+
   xlab("Predicted dissimilarity")+
   ylab("Observed dissimilarity")+
+  annotate(geom = "label",x=.5,y=1,
+           label=paste0("Deviance explained: ",round(gdm_fitted$explained,digits=2),"%\nAvg obs dissimilarity: ",round(gdm_fitted$intercept,digits=2)),
+           hjust=0,fontface="bold",vjust=1,
+           fill=fill_alpha("lightgrey", .6),
+           color="black")+
   # ylim(c(.2,1))+
   # xlim(c(.2,1))+
   ggpubr::theme_classic2()+
-  theme(legend.position = c(.15,.8),
-        legend.background = element_rect(color="black"))
+  theme(legend.position = c(.9,.25),
+        legend.background = element_rect(color="black"),
+        legend.title = element_text( size=7), 
+        legend.text=element_text(size=7),
+        legend.key.height = unit(8, 'pt'),
+        legend.key.width = unit(4,"pt"))&
+  theme(text=element_text(face="bold"))
 
-ptmp <-( (gdm_plot_pred)/(gdm_plot_var+gdm_var_contrib))+ plot_annotation(tag_levels = 'A')&theme(text=element_text(face="bold"))
+ptmp <-( (gdm_plot_pred)/(gdm_plot_var+gdm_pred_range))&theme(text=element_text(face="bold"))
+ptmp
 ```
 
 ## dbRDA
 
 Run dbRDA using satellite data and MEMs (accounting for spatial signal)
 ```{r}
-
 library(ggvegan)
 var_tmp <- c(var2use,names(select(meco_16s$sample_table,starts_with("MEM"))))
 
 #dbrda var table
 d_dbrda <- meco_16s$sample_table %>% 
-  select(c(var_tmp,"Sample","koppen_clim"))
+  select(all_of(c(var_tmp,"Sample","koppen_clim")))
 #get communities
 com_tmp <- meco_16s
 
@@ -3107,6 +3648,10 @@ var_signif%<>%
   mutate(label=gsub("_lt",'',rownames(.)),
          signif=ifelse(`Pr(>F)`>0.05,"No","Yes"))
 
+var_signif%>%
+  flextable::flextable()%>%
+  flextable::save_as_docx(path="figures_and_results/tables/dbrda_significance.docx")
+
 # add to data
 fort_rda_tmp%<>%
   left_join(var_signif)
@@ -3137,13 +3682,14 @@ dbrda_site_biplot_mems <-
   scale_color_gradient(low="#FFC6C4FF",high = "#672044FF", name="Sum of square",guide = guide_legend(order = 2))+
   coord_fixed()+ # fix proportion between axis units
   # plot variable labels
-  geom_label(data = fort_rda_tmp[want, , drop = FALSE ], # add variable names at the end of arrows
-            aes(x = dbRDA1*1.2, # nudge a bit the coordinates so that they're not on the arrows
-                y = dbRDA2*1.2,
+  ggrepel::geom_label_repel(data = fort_rda_tmp[want, , drop = FALSE ], # add variable names at the end of arrows
+            aes(x = dbRDA1*1.1, # nudge a bit the coordinates so that they're not on the arrows
+                y = dbRDA2*1.1,
                 label = midname),
             fontface="bold",
-            alpha=0,
-            label.size=NA)+
+            fill=NA,
+            label.size=NA
+            )+
   theme_classic()+
   xlab(paste0("dbRDA1 (",eig1,"%)"))+
   ylab(paste0("dbRDA2 (",eig2,"%)"))+
@@ -3155,6 +3701,17 @@ dbrda_site_biplot_mems <-
   theme(text=element_text(face="bold"))
 
 devtools::unload("ggvegan")
+dbrda_site_biplot_mems <- 
+  dbrda_site_biplot_mems+
+  annotate(geom="label",
+           x=min(layer_scales(dbrda_site_biplot_mems)$x$range$range),
+           y=max(layer_scales(dbrda_site_biplot_mems)$y$range$range)*1.1,
+           label=paste0(
+             "Constrained variance: " ,
+             round(dbrda_tmp$CCA$tot.chi/(dbrda_tmp$CCA$tot.chi+dbrda_tmp$CA$tot.chi)*100,digits=2),
+             "%"),
+           fontface="bold",hjust=0,vjust=0)
+
 dbrda_site_biplot_mems
 ```
 
@@ -3244,25 +3801,180 @@ pDD <- d4%>%
 pDD
 ```
 
+```{r}
+dhorn <- coef(summary(mhorn))%>%
+  data.frame()%>%
+  mutate(.before=1,Term=rownames(.))%>%
+  mutate(.before=1,Distance=c("Horn",""))
+dbray <- coef(summary(mbray))%>%
+  data.frame()%>%
+  mutate(.before=1,Term=rownames(.))%>%
+  mutate(.before=1,Distance=c("Bray-Curtis",""))
+dsorensen <- coef(summary(msorensen))%>%
+  data.frame()%>%
+  mutate(.before=1,Term=rownames(.))%>%
+  mutate(.before=1,Distance=c("Sørensen",""))
+
+rbind(dhorn,dbray,dsorensen)%>%
+  rename(pval=`Pr...t..`)%>%
+  mutate(pval=formatC(pval, format = "e", digits = 4))%>%
+  flextable::flextable()%>%
+  flextable::save_as_docx(path = "figures_and_results/tables/DD_lm_summary.docx")
+```
+
 
 #III- Enzymatic activity
 
+##Variance partitioning
+
+```{r}
+dvpcyto <-meco_16s$sample_table%>%
+  select(Sample,xtra_bacg,nb_asvs_raref)%>%
+  tidyr::drop_na()
+
+dvpenz <- meco_16s$sample_table%>%
+  select(Sample,xtra_BG,xtra_NAG,xtra_AP,xtra_LAP)%>%
+  filter(Sample%in%dvpcyto$Sample)%>%
+  tidyr::drop_na()
+
+dvpcyto%<>%
+  filter(Sample%in%dvpenz$Sample)
+
+dvppcoa <-  meco_16s$sample_table%>%
+  select(Sample,dim1,dim2,dim3)%>%
+  filter(Sample%in%dvpenz$Sample)
+
+dvpenv <- meco_16s$sample_table%>%
+  select(Sample,all_of(var2use))%>%
+  filter(Sample%in%dvpenz$Sample)
+
+dvpmems <-meco_16s$sample_table%>%
+  select(c(Sample,starts_with("MEM")))%>%
+  filter(Sample%in%dvpenz$Sample)
+
+
+
+vp_enz <- vegan::varpart(select(dvpenz,-Sample),
+                         select(dvpenv,-Sample),
+                         select(dvpmems,-Sample),
+                         select(dvppcoa,-Sample),
+                         select(dvpcyto,-Sample))
+plot(vp_enz)
+```
+
+
+```{r}
+dlabel <- data.frame(x=c(-1.4, -0.6, 0.6, 1.4, -.6, 0, -0.7, 0, 0.7, .6,0.2, -0.4, 0.4, -0.2, 0),
+                     y=c(.25, 1, 1, .25, 0.45, 0.4,-0.6,-1.2, -0.6, 0.45, -.9, 0, 0, -0.9, -0.4))
+
+dlabel$labels <- c(stringr::str_extract(rownames(vp_enz$part$fract),"X[0-4]{1}.*$")[-15],"All")
+dlabel%<>%
+  left_join(mutate(vp_enz$part$indfract,labels=c(stringr::str_extract(rownames(vp_enz$part$fract),"X[0-4]{1}.*$")[-15],"All","Residuals")))
+
+dlabel%<>%
+  mutate(text2plot=ifelse(Adj.R.square<0,NA,Adj.R.square*100))%>%
+  mutate(labels2plot=c("Satellite data",
+                       "MEMs",
+                       "PCoA",
+                       "Richness/Abundance",
+                       rep("",10),
+                       "Unexplained"))%>%
+  mutate(finaltext2plot=paste0(labels2plot,"\n",round(text2plot,digits = 2),"%"))%>%
+  mutate(finaltext2plot=ifelse(grepl("NA%",finaltext2plot),NA,finaltext2plot))%>%
+  mutate(finaltext2plot=ifelse(grepl("^\\n",finaltext2plot),gsub("\\n","",finaltext2plot),finaltext2plot))%>%
+  mutate(finaltext2plot=ifelse(is.na(finaltext2plot)&grepl("^X[0-4]$",labels),labels2plot,finaltext2plot))
+
+dvenn <- data.frame(grp=c("X1","X2","X3","X4"),
+                    x1=c(-1.2,-0.65,0.65,0),
+                    x2=c(0,0.65,-0.65,1.2),
+                    y1=c(0,.65,.65,-1.2),
+                    y2=c(-1.2,-.65,-.65,0))%>%
+  group_by(grp)%>%
+  mutate(x0=sum(x1+x2)/2,
+         y0=sum(y1+y2)/2,
+         a=sqrt((x1-x2)^2+(y1+y2)^2))%>%
+  ungroup()%>%
+  mutate(angle=c(-45,-45,45,45),
+         b=c(.8,.7,.7,.8))
+
+
+gg <- ggplot()+
+  # geom_point(dlabel,mapping=aes(x=x,y=y))+
+  ggforce::geom_ellipse(data = dvenn,mapping=aes(x0=x0,y0=y0,a=a,b=b,angle=angle,fill=grp),alpha=.4)+
+  geom_label(data=dlabel,mapping = aes(x,y,label=finaltext2plot),hjust=0.5,vjust=.5,fontface="bold",label.size = NA,alpha=.3,fill="lightgrey",size=5)+
+  scale_fill_manual(values=c("#833F3A","#747B4E","#FF9933","#0D484C"),guide="none")+
+  theme_void()
+gg
+```
+
+
+
+##Hmap PCOA coord
+```{r}
+function(x){(x-min(x))/(max(x)-min(x))}
+
+df_hmap <- pcoa_horn$data%>%
+  ungroup()%>%
+  select(Sample,koppen_clim,xtra_bacg,xtra_BG,xtra_NAG,xtra_AP,xtra_LAP,dim1,dim2,dim3,nb_asvs_raref)%>%
+  arrange(koppen_clim,dim1,dim2,dim3)%>%
+  mutate(Sample=forcats::fct_inorder(Sample))%>%
+  
+  mutate(across(c(-Sample,-koppen_clim),~(.x-min(.,na.rm = T))/(max(.,na.rm = T)-min(.,na.rm = T))))%>%
+  tidyr::drop_na()%>%
+  
+  
+  reshape2::melt(id.vars=c("Sample","koppen_clim"))%>%
+ 
+  mutate(variable=factor(variable,levels=c("dim1","dim2","dim3","xtra_BG","xtra_NAG","xtra_AP","xtra_LAP","xtra_bacg","nb_asvs_raref"),labels=c("PCOA1","PCOA2","PCOA3","BG","NAG","AP","LAP","Abundance","Richness")))
+
+
+hmap_pcoa <- df_hmap%>%
+  ggplot(aes(x=variable,y=Sample,fill=value))+
+  geom_tile()+
+  scale_x_discrete(position = "top")+
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle=45,hjust = 0),
+        text = element_text(face="bold"),
+        plot.background = element_blank(),
+        panel.background = element_blank())+
+  theme(plot.margin = margin(0,0,0,0,"pt"))+
+  scale_fill_gradientn(colours = paletteer::paletteer_d("rcartocolor::ArmyRose"),
+                       na.value = "grey30",
+                       name = "Scaled value")+
+  df_hmap%>%
+  ggplot(aes(x=1,y=Sample,fill=koppen_clim))+
+  geom_tile()+
+  scale_fill_manual(values = climate_palette,name="Climatic zones")+
+  theme_void()+
+  theme(plot.margin = margin(0,0,0,0,"pt"),
+        text=element_text(face="bold"))+
+  plot_layout(guides="collect",widths = c(9,.5))&theme(legend.position = "bottom",
+                                                       legend.direction = "horizontal",
+                                                       legend.title.position = "top",
+                                                       legend.title = element_text(hjust = .5), 
+                                                       legend.box="vertical")
+hmap_pcoa
+```
 
 ## Boruta
 ```{r}
 library(Boruta)
-var_boruta <- c(var2use,names(select(meco_16s$sample_table,starts_with("MEM"))),"bacg","dim1","dim2","dim3")
-dboruta <- meco_16s$sample_table
-  filter(!is.na(bacg)&bacg>0)%>%
-  select()
+enzymes <- paste0("xtra_",c("BG","AP","LAP","NAG"))
+var_boruta <- c(var2use,names(select(meco_16s$sample_table,starts_with("MEM"))),"xtra_bacg","dim1","dim2","dim3","nb_asvs_raref")
+dboruta <- meco_16s$sample_table%>%
+  filter(!is.na(xtra_bacg))%>%
+  filter(!is.na(xtra_LAP))%>%
+  select(all_of(c(var_boruta,enzymes)))
 
 
 dboruta_list <- NULL
 pboruta_list <- NULL
-for(enzyme in c("BG","AP","LAP","NAG")){
+for(enzyme in enzymes){
   set.seed(973)
   dboruta_tmp <- dboruta%>%
-    select(-c("BG","AP","LAP","NAG")[-which(c("BG","AP","LAP","NAG")%in%enzyme)])
+    select(-all_of(enzymes[-which(enzymes==enzyme)]))
   dboruta_tmp%<>%
     relocate(.data[[enzyme]])%>%
     rename(targ_enz=.data[[enzyme]])
@@ -3270,12 +3982,11 @@ for(enzyme in c("BG","AP","LAP","NAG")){
   boruta_train <- Boruta(targ_enz~., data = dboruta_tmp, doTrace = 2,maxRuns=500)
   final_boruta <- TentativeRoughFix(boruta_train)
   boruta_df <- attStats(boruta_train)
-  
+  ez_tmp <- gsub("xtra_","",enzyme)
   
   #make a radar plot from these! 
   #scale boruta varIMP results between 0 and 1
-  range01 <- function(x){(x-min(x))/(max(x)-min(x))}
-  boruta_df01 <- range01(boruta_df[,c(1:4)])
+  boruta_df01 <- fct_list$range01(boruta_df[,c(1:4)])
   boruta_df01$decision <- boruta_df$decision
   #re-order by type of variables | climate, soil, plant
   boruta_df01$factors <- rownames(boruta_df01)
@@ -3284,8 +3995,10 @@ for(enzyme in c("BG","AP","LAP","NAG")){
     left_join(rename(names_df_clean,factors=Var2))%>%
     mutate(midname=ifelse(is.na(midname),factors,midname))%>%
     mutate(midname=ifelse(grepl("dim",midname),gsub("dim","PCOA ",midname),midname))%>%
-    mutate(midname=ifelse(midname=="bacg","Biomass",midname))%>%
+    mutate(midname=ifelse(midname=="xtra_bacg","Abundance",midname))%>%
+    mutate(midname=ifelse(midname=="nb_asvs_raref","Richness",midname))%>%
     mutate(midname=forcats::fct_inorder(midname))%>%
+    mutate(midname=forcats::fct_relevel(midname,"Abundance",after = Inf))%>%
     mutate(decision=forcats::fct_relevel(decision,"Confirmed","Tentative","Rejected"))
   
   
@@ -3293,7 +4006,7 @@ for(enzyme in c("BG","AP","LAP","NAG")){
     geom_histogram(binwidth=1, stat="identity") +
     theme_light() +
     scale_fill_gradientn(colors = paletteer::paletteer_d("rcartocolor::ArmyRose"), limits=c(0,1),name = "Maximal importance") 
-  pboruta_list[[enzyme]] <-  p+
+  pboruta_list[[ez_tmp]] <-  p+
     coord_polar(clip = "off")+
     geom_segment(mapping=aes(y=0, xend=midname,
                              yend=medianImp,
@@ -3310,10 +4023,10 @@ for(enzyme in c("BG","AP","LAP","NAG")){
           axis.text.y = element_blank(),
           axis.title = element_blank(),
           panel.border = element_blank())+
-    ggtitle(enzyme) 
-  dboruta_list[[enzyme]]$dbtrain <- boruta_train
-  dboruta_list[[enzyme]]$dbfinal <- boruta_df
-  dboruta_list[[enzyme]]$dbplot <- boruta_df01
+    ggtitle(ez_tmp) 
+  dboruta_list[[ez_tmp]]$dbtrain <- boruta_train
+  dboruta_list[[ez_tmp]]$dbfinal <- boruta_df
+  dboruta_list[[ez_tmp]]$dbplot <- boruta_df01
 }
 
 enz_boruta <- patchwork::wrap_plots(pboruta_list)+
@@ -3324,5 +4037,604 @@ enz_boruta <- patchwork::wrap_plots(pboruta_list)+
         legend.background = element_blank())
 
 
-devtools::unload(Boruta)
+devtools::unload("Boruta")
+enz_boruta
 ```
+
+##Enzyme sites
+
+```{r}
+enz_bxp_df <- meco_16s$sample_table%>%
+  reshape2::melt(measure.vars=enzymes)%>%
+  mutate(variable=gsub("xtra_","",variable))%>%
+  rename(enzyme=variable)%>%
+  filter(Sample%in%dvpenz$Sample)
+
+enz_bxp <- enz_bxp_df %>%
+  ggplot(aes(x=koppen_clim,y=value))+
+  geom_boxplot(outlier.shape = NA,aes(fill=koppen_clim))+
+  geom_point(position = position_jitter(width = .1,height = 0))+
+  facet_wrap(~enzyme,scales = "free")+
+  scale_fill_manual(values = climate_palette,name="Climate zone")+
+  theme_bw()+
+  ylab(bquote(bold("Enzyme activity (nmol.h"^-1~".g"[DM]~")")))+
+  theme(text = element_text(face="bold"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank())
+
+enz_bxp$data %>%
+    group_by(enzyme) %>%
+    rstatix::kruskal_test(value ~ koppen_clim)%>%
+  flextable::flextable()%>%
+  flextable::save_as_docx(path = "figures_and_results/tables/enzyme_koppen_KW.docx")
+  
+
+
+stat.test <- enz_bxp$data %>%
+  group_by(enzyme) %>%
+  rstatix::wilcox_test(value ~ koppen_clim) %>%
+  rstatix::adjust_pvalue(method = "bonferroni") %>%
+  rstatix::add_significance()
+
+stat.test%>%
+  flextable::flextable()%>%
+  flextable::save_as_docx(path = "figures_and_results/tables/enzyme_koppen_pairWilcox.docx")
+
+stat.test <- stat.test %>% rstatix::add_xy_position(x = "koppen_clim")
+stat.test%<>%
+  group_by(enzyme)%>%
+  mutate(y.position=min(y.position))%>%
+  ungroup()
+enz_climate_bxp <-enz_bxp  +
+  ggpubr::stat_pvalue_manual(stat.test, hide.ns = TRUE, tip.length = 0) 
+enz_climate_bxp
+```
+
+
+##ASV association to enzymes
+```{r}
+#remove singletons
+asv_to_remove <- rowSums(meco_16s$otu_table)>1
+meco_16s_ns <- clone(meco_16s)
+meco_16s_ns$otu_table <- meco_16s_ns$otu_table[asv_to_remove,]
+meco_16s_ns$tidy_dataset()
+
+#merge in a big dataframe
+asv_enzyme_data <- meco_16s_ns$otu_table%>%
+  mutate(across(everything(),.fns=~(.x/sum(.))*100))%>% #convert to relative abundance
+  mutate(ASV_id=rownames(.))%>% #get asvid column
+  reshape2::melt()%>% #melt
+  filter(value!=0)%>% #filter null asv/sample pairs
+  rename(Sample=variable)%>% #rename to sample
+  left_join(meco_16s_ns$sample_table)%>%
+  left_join(meco_16s_ns$tax_table)%>%
+  filter(prev>.1*171) #filter 10% prevalence
+
+#split data per asvs
+list_asvs2test <- split(asv_enzyme_data, f = asv_enzyme_data$ASV_id) 
+l2t <- 1:length(list_asvs2test)
+
+
+tax_positive_sum <- NULL
+tax_negative_sum <- NULL
+tax_sel <- NULL
+output <- NULL
+resp_asvs <- NULL
+for(enz2test in paste0("xtra_",c("BG","LAP","NAG","AP"))){
+
+output[[enz2test]] <- lapply(X = l2t, FUN = function(x){
+  mod <- lm(value ~ list_asvs2test[[x]][[enz2test]], data = list_asvs2test[[x]], na.action=na.omit) 
+  sum <- summary(mod)
+  fvalue <- anova(mod)$`F value`[1]
+  pvalue <- anova(mod)$`Pr(>F)`[1]
+  coef <- sum$coefficient[2]
+  signc <- sign(coef)
+  rsq <- sum$adj.r.squared
+  es <- effectsize::F_to_f(fvalue, 1, 133)$Cohens_f_partial*signc
+  ind.names <- c("fvalue", "pvalue", "coef", 'rsq', 'signc', 'es')
+  ind.values <- c(unname(fvalue), pvalue, coef, rsq, signc, es)
+  es_mat <- as.data.frame(cbind(ind.names, ind.values))
+  es_mat$name <- list_asvs2test[[x]]$ASV_id[1]
+  return(es_mat)
+})
+
+es_asvs <- do.call(rbind, output[[enz2test]])
+es_asvs <- tidyr::spread(es_asvs, ind.names, ind.values)
+es_asvs <- es_asvs %>% 
+  tidyr::drop_na(fvalue) %>% 
+  mutate_at(c("fvalue", "pvalue", "coef", "rsq", "signc", "es"), as.numeric) %>% 
+  as.data.frame()%>%
+  mutate(enzyme=enz2test)
+
+resp_asvs[[enz2test]] <- es_asvs
+
+
+#taxa positively associated
+tax_positive <- list_asvs2test[es_asvs$name[which(es_asvs$pvalue<0.06 & es_asvs$es > 0)]]
+tax_positive_sum[[enz2test]] <- do.call(rbind, tax_positive) %>%
+  group_by(Sample) %>%
+  summarise(tax_positive_ab=sum(value, na.rm=TRUE))
+tax_positive_sum[[enz2test]]$type <- 'positive' 
+
+#taxa negatively associated
+tax_negative <- list_asvs2test[es_asvs$name[which(es_asvs$pvalue<0.06 & es_asvs$es < 0)]]
+tax_negative_sum[[enz2test]] <- do.call(rbind, tax_negative) %>%
+  group_by(Sample) %>%
+  summarise(tax_negative_ab=sum(value, na.rm=TRUE))
+tax_negative_sum[[enz2test]]$type <- 'negative' 
+
+#selected taxa
+tax_negative_asv <- do.call(rbind, tax_negative) %>%
+  group_by(ASV_id) %>%
+  summarise(tax_negative_ab=sum(value, na.rm=TRUE))
+tax_positive_asv <- do.call(rbind, tax_positive) %>%
+  group_by(ASV_id) %>%
+  summarise(tax_positive_ab=sum(value, na.rm=TRUE))
+
+pos <- as.data.frame(c(tax_positive_asv$ASV_id)); neg <- as.data.frame(c(tax_negative_asv$ASV_id))
+pos$type <- 'positive'; neg$type <- 'negative'
+colnames(pos) <- c("ASV_id", "type"); colnames(neg) <- c('ASV_id', 'type')
+tax_sel[[enz2test]] <- rbind(pos, neg)
+}
+```
+
+
+```{r}
+ASV_ENZ_assoc <- 
+bind_rows(tax_sel,.id = "id")%>%
+  tidyr::pivot_wider(names_from = id,values_from = type)
+
+meco_16s$tax_table%<>%
+  left_join(ASV_ENZ_assoc)
+meco_16s_ns$tax_table%<>%
+  left_join(ASV_ENZ_assoc)
+```
+
+```{r}
+df2join <- meco_16s$otu_table %>%
+  mutate(ASV_id=rownames(.))%>%
+  reshape2::melt()%>%
+  filter(value!=0)
+for(ez in c("xtra_BG","xtra_NAG","xtra_LAP","xtra_AP")){
+test_plot <- 
+meco_16s$tax_table%>%
+  filter_at(vars(xtra_BG,xtra_LAP,xtra_NAG,xtra_AP),any_vars(!is.na(.)))%>%
+  rename(BG=xtra_BG,LAP=xtra_LAP,NAG=xtra_NAG,AP=xtra_AP)%>%
+  left_join(df2join)%>%
+  rename(Sample=variable,
+         ab=value)%>%
+  group_by(Sample)%>%
+  mutate(relab=ab/sum(ab))%>%
+  ungroup()%>%
+  left_join(meco_16s$sample_table)%>%
+  reshape2::melt(measure.vars=c("xtra_BG","xtra_NAG","xtra_LAP","xtra_AP"))%>%
+  filter(variable==ez)%>%
+  filter(!is.na(value))%>%
+  filter(value!=0)%>%
+  ggplot(aes(value,relab,color=.data[[gsub("xtra_","",ez)]]))+
+  geom_point(alpha=.8)+
+  facet_wrap(~ASV_id,scales = "free")
+ggsave(paste0("figures_and_results/",ez,"_test.png"),test_plot,width = 20,height = 20)
+}
+```
+
+```{r}
+Enz_associated_asvz <- bind_rows(resp_asvs,.id = "enzyme")
+Enz_associated_asvz%>%
+  mutate(rsq_pct=rsq*100)%>%
+  mutate(assoc_direction=ifelse(coef<0,"Negative","Positive"))%>%
+  filter(pvalue<0.05)%>%
+  # filter(rsq_pct>10)%>%
+  ggplot(aes(x=rsq_pct,fill=enzyme))+
+  geom_histogram(alpha=.5)+
+  facet_wrap(~enzyme,scales = "free")
+```
+
+
+```{r}
+trying <-  Enz_associated_asvz%>%
+  mutate(rsq_pct=rsq*100)%>%
+  mutate(assoc_direction=ifelse(coef<0,"Negative","Positive"))%>%
+  mutate(sign=ifelse(pvalue<0.05,"yes","no"))%>%
+  mutate(xplain_enough=ifelse(rsq_pct>10,"yes","no"))%>%
+  # mutate(name=forcats::fct_relevel(name,tree_asvs$name))%>%
+  mutate(coef=ifelse(sign=="yes",coef,NA))%>%
+  mutate(es=ifelse(sign=="yes",es,NA))%>%
+  mutate(enzyme=gsub("xtra_","",enzyme))
+
+
+#build a new taxonomy table
+tmp_tax_enz <- 
+  #replace not assigned levels by "Unknown [taxlevel]" (e.g.,Unknown Genus,Unknown Class)
+  mutate(meco_16s$tax_table,across(c(16:21),~ifelse(.x=="",paste0("Unknown ",cur_column()),.x)))%>%
+  #remove parenthesis from assignation as it disrupts ape 
+  mutate(across(c(16:21),~gsub("\\(|\\)", "", .x),.names="new_{.col}"))%>%
+  #convert to factor
+  mutate(across(c(1,30:35),~factor(.x)))
+rownames(tmp_tax_enz) <- tmp_tax_enz$ASV_id
+# remove ASVs not associated with enzymes
+signif_asvz <- trying%>%
+  group_by(name)%>%
+  filter(any(!is.na(coef)))
+sign_asvz <- row.names(tmp_tax_enz)%in%signif_asvz$name #id signif asvz
+
+
+tmp_tax_enz <- tmp_tax_enz[sign_asvz,] #remove em
+
+#build the tree
+datree_enz <-
+  ape::as.phylo.formula(~new_Kingdom_conf_rdp/new_Phylum_conf_rdp/new_Class_conf_rdp/new_Order_conf_rdp/new_Family_conf_rdp/new_Genus_conf_rdp/ASV_id,tmp_tax_enz, collapse = F)
+datree_enz<- ape::compute.brlen(datree_enz)
+
+meco_4tree_enz <- clone(meco_16s)
+rownames(meco_4tree_enz$tax_table) <- meco_4tree_enz$tax_table$ASV_id
+meco_4tree_enz$otu_table <- meco_4tree_enz$otu_table[sign_asvz,]
+
+meco_4tree_enz$tidy_dataset()
+
+phy_with_tree_enz <- file2meco::meco2phyloseq(meco_4tree_enz)
+phy_with_tree_enz@phy_tree <- datree
+tax_table(phy_with_tree_enz) <- as.matrix(tmp_tax_enz)
+
+
+
+p1 <- ggtree(phy_with_tree_enz, layout="fan", open.angle=10, branch.length="none")
+
+
+class4tree_enz <- phy_with_tree_enz@tax_table[,c("ASV_id","new_Class_conf_rdp")]%>%
+  data.frame()%>%
+  mutate(new_Class_conf_rdp=ifelse(grepl("Unknown",new_Class_conf_rdp),"Unidentified",new_Class_conf_rdp))%>%
+  group_by(new_Class_conf_rdp)%>%
+  mutate(nasvs=n())%>%
+  ungroup()%>%
+  arrange(desc(nasvs))%>%
+  mutate(new_Class_conf_rdp=forcats::fct_inorder(new_Class_conf_rdp))%>%
+  mutate(new_Class_conf_rdp=forcats::fct_relevel(new_Class_conf_rdp,"Unidentified",after = Inf))%>%
+  rename(tree_class=new_Class_conf_rdp)%>%
+  arrange(tree_class)
+# %>%  mutate(new_Class_conf_rdp=ifelse(new_Class_conf_rdp%in%top_class$class,"Others",new_Class_conf_rdp))
+
+my_colors <- as.vector(paletteer::paletteer_d("rcartocolor::Antique"))
+names(my_colors) <- levels(class4tree_enz$tree_class)
+
+relab4tree_enz <- class4tree_enz%>%
+  left_join(meco_4tree_enz$tax_table[,c("ASV_id","mean_relab")])%>%
+  rename(avg_relab=mean_relab)%>%
+  mutate(avg_relab=as.numeric(avg_relab))
+
+p2 <- p1+
+  geom_fruit(data=relab4tree_enz,
+             geom = geom_tile,
+             mapping = aes(y=ASV_id,
+                           x=0,
+                           fill=avg_relab),
+             offset = .001)+
+  scale_fill_gradientn(colours = paletteer::paletteer_d("jcolors::pal12"),
+                       name="Mean relab (%)",
+                       values = seq(0,1,1/13))+
+  theme(legend.key.height = unit(8, 'pt'),
+        legend.key.width = unit(4,"pt"))
+
+p3 <- p2+
+  geom_fruit(data=trying,
+             geom = geom_point,
+             mapping = aes(y=name,
+                           x=enzyme,
+                           size=abs(es),
+                           color=assoc_direction),
+             stat="identity",
+             offset = .025,
+             axis.params=list(
+               axis       = "x",
+               text.size  = 1.5,
+               hjust      = .5,
+               vjust      = 1,
+               nbreak     = 4,
+             ),
+             grid.params=list(vline=T))+
+  scale_color_manual(values=c("lightpink","lightgreen"),name="Association")+
+  scale_size_continuous(range = c(1,4), name = "Estimate")
+
+p4 <- p3+
+  ggnewscale::new_scale_fill()+
+  geom_fruit(data=class4tree_enz,
+             geom = geom_tile,
+             mapping = aes(y=ASV_id,
+                           x=0,
+                           fill=tree_class),
+             offset = .05)+
+  scale_fill_manual(name = "Class", values = my_colors)+
+  theme(text = element_text(face="bold"),
+        panel.spacing.x=unit(0, "lines"),
+        panel.spacing.y=unit(0, "lines"),
+        legend.box.spacing = unit(-1, 'lines'),
+        legend.margin = margin(0, 0, 0, 0, "cm"),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        legend.background = element_blank(),
+        plot.margin = margin(0, 0, 0, 0, "cm"))
+p4
+```
+
+```{r}
+p_assocenz_fraction <- 
+tibble(ASVs=c(sum(sign_asvz)/length(sign_asvz),1-sum(sign_asvz)/length(sign_asvz)),
+       Reads=c(sum(meco_16s$otu_table[sign_asvz,])/sum(meco_16s$otu_table),1-sum(meco_16s$otu_table[sign_asvz,])/sum(meco_16s$otu_table)),
+           enz_related=c("yes","no"))%>%
+  reshape2::melt()%>%
+  ggplot(aes(x=variable,y=value*100,fill=enz_related))+
+  geom_bar(stat="identity",position = "dodge")+
+  scale_fill_manual(values=c("grey25","darkorange"),name="Enzyme associated",label=c("No","Yes"))+
+  theme(text = element_text(face="bold"),
+        axis.title.x = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        panel.grid = element_blank(),
+        axis.line = element_line())+
+  scale_y_continuous(expand = c(0,0),transform = "log1p",breaks = c(1,10,25,50,100),limits = c(0,100))+
+  ylab("%")
+p_assocenz_fraction  
+```
+
+```{r}
+p_asc_count_perenz <- trying%>%
+  tidyr::drop_na()%>%
+  group_by(enzyme,assoc_direction)%>%
+  summarise(nasvs=n())%>%
+  ungroup()%>%
+  ggplot(aes(y=enzyme,x=nasvs,fill=assoc_direction))+
+  geom_bar(stat = "identity")+
+  scale_x_continuous(expand = c(0,0),limits = c(0,55))+
+  scale_fill_manual(values = c("lightpink","lightgreen"),name=element_blank())+
+  ggpubr::theme_classic2()+
+  theme(text=element_text(face="bold"),
+        axis.title.y = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        legend.background = element_blank())+
+  xlab("Nb ASVs")
+p_asc_count_perenz
+```
+
+```{r}
+info_asvz_enzyme <- 
+trying%>%
+  tidyr::drop_na()%>%
+  rename(ASV_id=name)%>%
+  left_join(meco_16s$tax_table)%>%
+  ggplot(aes(x=enzyme,y=mean_relab,fill=assoc_direction))+
+  geom_boxplot(outliers = F)+
+  geom_point(position = position_jitterdodge(jitter.width = .1))+
+  scale_y_continuous(expand = c(0,0),limits = c(0,2.5))+
+  scale_fill_manual(values = c("lightpink","lightgreen"),name=element_blank())+
+  ggpubr::theme_classic2()+
+  theme(text=element_text(face="bold"),
+        axis.title.x = element_blank())+
+  ylab("ASVs mean realtive abundance (%)")+
+  
+  trying%>%
+  tidyr::drop_na()%>%
+  rename(ASV_id=name)%>%
+  left_join(meco_16s$tax_table)%>%
+  ggplot(aes(x=enzyme,y=(prev/171)*100,fill=assoc_direction))+
+  geom_boxplot(outliers = F)+
+  geom_point(position = position_jitterdodge(jitter.width = .1))+
+  # scale_y_continuous(expand = c(0,0),limits = c(0,2.5))+
+  scale_fill_manual(values = c("lightpink","lightgreen"),name=element_blank())+
+  ggpubr::theme_classic2()+
+  theme(text=element_text(face="bold"),
+        axis.title.x = element_blank())+
+  ylab("ASVs prevalence (%)")+
+  plot_layout(guides = "collect")&
+  theme(plot.background = element_blank(),
+        panel.background = element_blank(),
+        legend.background = element_blank())
+
+info_asvz_enzyme
+```
+
+```{r}
+stripz <- ggh4x::strip_themed(background_x = ggh4x::elem_list_rect(fill = my_colors))
+
+dp_class_enz <- trying%>%
+  tidyr::drop_na()%>%
+  rename(ASV_id=name)%>%
+  left_join(class4tree_enz)%>%
+  mutate(estimate_abs=abs(es))%>%
+  group_by(tree_class,enzyme,assoc_direction)%>%
+  summarise(mean=mean(es),
+            sd=sd(es))%>%
+  ungroup()
+
+
+p_class_enzyme_estimate <-
+
+  ggplot()+
+  geom_rect(data=data.frame(xmin=-Inf,
+                            xmax=Inf,
+                            ymin=-Inf,
+                            ymax=Inf),
+            mapping=aes(xmin=xmin,xmax=xmax,ymin=ymin,ymax=ymax),
+            fill=rep(c("white","azure2"),24))+
+  # geom_boxplot(outliers = F)+
+  geom_point(dp_class_enz,mapping=aes(y=mean,x=assoc_direction,color=assoc_direction))+ 
+  geom_errorbar(dp_class_enz,mapping=aes(y=mean,x=assoc_direction,ymin=mean-sd, ymax=mean+sd,color=assoc_direction), width=0)+ 
+  
+   
+  
+  # scale_y_continuous(expand = c(0,0),limits = c(0,2.5))+
+  scale_color_manual(values = c("lightpink","lightgreen"),name=element_blank())+
+  ggpubr::theme_classic2()+
+  theme(text=element_text(face="bold"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.spacing.x = unit(rep(0,11), "lines"),
+        # axis.text.y = element_text(angle=45,hjust=1,size=7),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        legend.background = element_blank())+
+  geom_hline(yintercept=0,lty=2)+
+  ylab("Estimates")+
+  ylim(c(-1,1))+
+  ggh4x::facet_grid2(enzyme~tree_class,strip = stripz,labeller = label_bquote(cols = ""))
+
+ 
+
+p_class_enzyme_estimate
+```
+
+```{r}
+onetwotest <-
+trying%>%
+  tidyr::drop_na()%>%
+  rename(ASV_id=name)%>%
+  left_join(class4tree_enz)%>%
+  mutate(estimate_abs=abs(es))%>%
+  group_by(tree_class,enzyme,assoc_direction)%>%
+  summarise(mean=mean(es),
+            sd=sd(es))%>%
+  ungroup()
+  
+  
+  
+
+p_class_enzyme_estimate2 <-
+ggplot()+
+  geom_rect(data=data.frame(xmin=c(0,1.5,2.5,3.5),
+                            xmax=c(1.5,2.5,3.5,4.5),
+                            ymin=-Inf,
+                            ymax=Inf),
+            mapping=aes(xmin=xmin,xmax=xmax,ymin=ymin,ymax=ymax),
+            fill=rep(c("white","azure2"),24))+
+  # geom_boxplot(outliers = F)+
+  geom_point(onetwotest,mapping=aes(y=mean,x=enzyme,color=assoc_direction))+ 
+  geom_errorbar(onetwotest,mapping=aes(y=mean,x=enzyme,ymin=mean-sd, ymax=mean+sd,color=assoc_direction), width=0)+ 
+  scale_x_discrete(expand = c(0,0))+
+  scale_color_manual(values = c("lightpink","lightgreen"),name=element_blank())+
+  ggpubr::theme_classic2()+
+  theme(text=element_text(face="bold"),
+        axis.title.x = element_blank(),
+        # axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.spacing.x = unit(rep(0,11), "pt"),
+        axis.text.x = element_text(angle=45,hjust=1,size=7),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        legend.background = element_blank())+
+  geom_hline(yintercept=0,lty=2)+
+  ylab("Estimates")+
+  ylim(c(-1,1))+
+  ggh4x::facet_grid2(.~tree_class,strip = stripz,labeller = label_bquote(cols = ""))
+p_class_enzyme_estimate2
+```
+
+
+#IV- Save plots
+
+### Figure 1
+```{r}
+ggsave("figures_and_results/figures/fig1/rarefaction.png",p_rare_asv,height = 3.5,width = 5)
+ggsave("figures_and_results/figures/fig1/cyto.png",cyto_plot,height = 3,width = 4)
+ggsave("figures_and_results/figures/fig1/pca.png",pca_site_var,height = 3,width = 3)
+ggsave("figures_and_results/figures/fig1/mapp.png",mapproj,height = 6,width = 6)
+```
+### Figure 2
+```{r}
+ggsave("figures_and_results/figures/fig2/relab_prev_comp.png",p_relab,height = 2.5,width = 5)
+ggsave("figures_and_results/figures/fig2/relab_prev_comp2.png",p_relab2,height = 5,width = 5)
+ggsave("figures_and_results/figures/fig2/relab_prev_cor.png",relab_prev_genus,height = 6,width = 10)
+ggsave("figures_and_results/figures/fig2/upset.png",upset_plot,height = 4,width = 8)
+```
+###Figure3
+```{r}
+ggsave("figures_and_results/figures/fig3/comp_phylum.png",bar_list$Phylum_conf_rdp,height = 3.5,width = 6.5)
+ggsave("figures_and_results/figures/fig3/comp_genus.png",bar_list$Genus_conf_rdp,height = 3.5,width = 6.5)
+pcomp <- bar_list$Phylum_conf_rdp[[2]]+bar_list$Phylum_conf_rdp[[1]]+plot_spacer()+bar_list$Genus_conf_rdp[[1]]+plot_layout(guides = "collect",heights = c(1/12,1,1/24,1))
+ggsave("figures_and_results/figures/fig3/comp.png",pcomp,height = 9,width = 6.5)
+
+ggsave("figures_and_results/figures/fig3/metacodeR_tree.png",taxo_structree,height = 9,width = 9)
+ggsave("figures_and_results/figures/fig3/metacodeR_tree_RGB.png",heat_treergb,height = 9,width = 9)
+```
+###Figure4
+```{r}
+ggsave("figures_and_results/figures/fig4/pcoasites.png",pcoasmpfull,height = 7,width = 6.5)
+ggsave("figures_and_results/figures/fig4/pcoasites12.png",pcoa_horn+theme(legend.position = "none"),height = 1.75,width = 2.5)
+ggsave("figures_and_results/figures/fig4/pcoasites13.png",pcoa_horn13+theme(legend.position = "none"),height = 2,width = 2.5)
+ggsave("figures_and_results/figures/fig4/hmap_pcoa.png",hmap_pcoa,height = 8,width = 5)
+```
+###Figure5
+```{r}
+ggsave("figures_and_results/figures/fig5/pcoatax.png",pcoataxfull,height = 7,width = 6.5)
+```
+###Figure6
+```{r}
+ggsave("figures_and_results/figures/fig6/pvp_bar.png",pvp_bar,height = 6,width = 2)
+ggsave("figures_and_results/figures/fig6/dbRDA.png",dbrda_site_biplot_mems,height = 6,width = 7)
+ggsave("figures_and_results/figures/fig6/GDM_pred.png",gdm_plot_pred,height = 4,width = 8)
+ggsave("figures_and_results/figures/fig6/GDM_spline.png",gdm_plot_var,height = 4,width = 6)
+ggsave("figures_and_results/figures/fig6/GDM_varrange.png",gdm_pred_range,height = 6,width = 3)
+```
+###Figure7
+```{r}
+ggsave("figures_and_results/figures/fig7/boruta.png",enz_boruta,height = 9,width = 9.5)
+ggsave("figures_and_results/figures/fig7/vpenz.png",gg,width = 9,height =5)
+```
+###Figure8
+```{r}
+ggsave("figures_and_results/figures/fig8/tree.png",p4,height = 7,width = 7)
+ggsave("figures_and_results/figures/fig8/fraction.png",p_assocenz_fraction,height = 2,width = 3.5)
+ggsave("figures_and_results/figures/fig8/infosv.png",info_asvz_enzyme,height = 3.5,width = 8)
+ggsave("figures_and_results/figures/fig8/countasv.png",p_asc_count_perenz,height = 2,width = 3)
+ggsave("figures_and_results/figures/fig8/classest.png",p_class_enzyme_estimate,height = 4,width = 5)
+ggsave("figures_and_results/figures/fig8/classest2.png",p_class_enzyme_estimate2,height = 4,width = 8)
+```
+
+#V- Climatic zone summary
+```{r}
+meco_16s$sample_table%>%
+  select(Sample,koppen_clim,var2use,xtra_bacg,xtra_BG,xtra_NAG,xtra_AP,xtra_LAP,reads_post,nb_asvs_raref)%>%
+  group_by(koppen_clim)%>%
+  summarise(across(.cols = where(is.numeric),.fns = ~mean(.x,na.rm = T)))%>%
+  t()%>%
+  data.frame()%>%
+  janitor::row_to_names(row_number = 1)%>%
+  cbind(meco_16s$sample_table%>%
+          dplyr::select(Sample,koppen_clim,var2use,xtra_bacg,xtra_BG,xtra_NAG,xtra_AP,xtra_LAP,reads_post,nb_asvs_raref)%>%
+          group_by(koppen_clim)%>%
+          summarise(across(.cols = where(is.numeric),.fns = ~sd(.x,na.rm = T)))%>%
+          t()%>%
+          data.frame()%>%
+  janitor::row_to_names(row_number = 1)
+  )%>% 
+  rename(cold_mean = 1,
+         hot_mean = 2,
+         temp_mean = 3,
+         cold_sd = 4,
+         hot_sd = 5,
+         temp_sd = 6)%>%
+  tidyr::unite(c(1,4),col=`Continental cold/Tundra`,sep=' ± ')%>%
+    tidyr::unite(c(2,4),col=`Continental hot summer`,sep=' ± ')%>%
+    tidyr::unite(c(3,4),col=`Temperate`,sep=' ± ')%>%
+  mutate(Var2=gsub("_lt|xtra_","",rownames(.)))%>%
+  left_join(names_df_clean)%>%
+  mutate(midname=ifelse(is.na(midname),Var2,midname))%>%
+  mutate(midname=ifelse(midname=="bacg","Abundance",midname))%>%
+  select(-c(Var2,fullname))%>%
+  relocate(midname,.before=1)%>%
+  rename(Variable=midname)%>%
+  flextable::flextable()%>%
+  flextable::save_as_docx(path="figures_and_results/tables/climate_zone_smry.docx")
+```
+
+
+#VI- Save Environment and Session Info
+```{r}
+save.image("env.RData")
+writeLines(capture.output(sessionInfo()), "sessionInfo.txt")
+```
+
+# -----------------------------------
+# -----------------------------------
+# -----------------------------------

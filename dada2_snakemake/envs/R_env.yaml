@@ -11,5 +11,4 @@ dependencies:
   - r-stringr
   - r-dplyr
   - r-magrittr
-  - r-microeco
   - r-reshape2

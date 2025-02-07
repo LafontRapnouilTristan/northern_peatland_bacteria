@@ -1,0 +1,39 @@
+// Define the point collection and ecoregions dataset
+var points = ee.FeatureCollection('projects/ee-tristanlafontrapnouil/assets/site_coord_MAPP-ecoR');
+var ecoregions = ee.FeatureCollection('RESOLVE/ECOREGIONS/2017');
+
+// Function to get the ecoregion properties for a given point
+var getEcoregion = function(point) {
+  var pointGeom = point.geometry();
+  var pointProperties = point.toDictionary();
+  
+  // Get the first intersecting ecoregion
+  var intersectingEcoregion = ecoregions.filterBounds(pointGeom).first();
+  
+  // Check if the intersecting ecoregion exists and get its properties
+  var ecoregionProperties = ee.Algorithms.If(
+    intersectingEcoregion,
+    intersectingEcoregion.toDictionary(),
+    ee.Dictionary()
+  );
+  
+  // Combine the original point properties with the ecoregion properties
+  var combinedProperties = pointProperties.combine(ecoregionProperties);
+  
+  // Return the point with combined properties
+  return ee.Feature(pointGeom, combinedProperties);
+};
+
+// Apply the function to each point
+var pointsWithEcoregions = points.map(getEcoregion);
+
+// Print the result to the console to check
+print('Points with Ecoregion Data', pointsWithEcoregions);
+
+// Export the results to your Google Drive
+Export.table.toDrive({
+  collection: pointsWithEcoregions,
+  description: 'MAPP_ecoR_with_Ecoregions',
+  fileFormat: 'CSV'
+});
+

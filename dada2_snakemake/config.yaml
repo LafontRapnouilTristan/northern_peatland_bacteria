@@ -9,9 +9,7 @@ resultsfolder:
 benchmarksfolder:
     benchmarks/
 datasets:
-
     - MAPP_300
-
 # taxa
 taxassign:
     tax_file : taxonomy_database/silva_nr99_v138.2_toGenus_trainset.fa
