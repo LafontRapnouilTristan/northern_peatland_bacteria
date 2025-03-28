@@ -1,0 +1,85 @@
+R version 4.3.3 (2024-02-29 ucrt)
+Platform: x86_64-w64-mingw32/x64 (64-bit)
+Running under: Windows 11 x64 (build 26100)
+
+Matrix products: default
+
+
+locale:
+[1] LC_COLLATE=English_Europe.utf8  LC_CTYPE=English_Europe.utf8    LC_MONETARY=English_Europe.utf8
+[4] LC_NUMERIC=C                    LC_TIME=English_Europe.utf8    
+
+time zone: Europe/Paris
+tzcode source: internal
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+[1] patchwork_1.2.0 microeco_1.5.0  ggplot2_3.5.1   magrittr_2.0.3  dplyr_1.1.4    
+
+loaded via a namespace (and not attached):
+  [1] IRanges_2.36.0              progress_1.2.3              urlchecker_1.0.1            nnet_7.3-19                
+  [5] shinythemes_1.2.0           ggfittext_0.10.2            DT_0.32                     Biostrings_2.70.3          
+  [9] TH.data_1.1-2               vctrs_0.6.5                 effectsize_1.0.0            digest_0.6.35              
+ [13] png_0.1-8                   shape_1.4.6.1               proxy_0.4-27                kgc_1.0.0.2                
+ [17] ggrepel_0.9.5               bayestestR_0.15.1           deldir_2.0-4                httpcode_0.3.0             
+ [21] permute_0.9-7               MASS_7.3-60.0.1             fontLiberation_0.1.0        reshape2_1.4.4             
+ [25] httpuv_1.6.15               foreach_1.5.2               BiocGenerics_0.48.1         withr_3.0.0                
+ [29] ggfun_0.1.4                 xfun_0.43                   ggpubr_0.6.0                ellipsis_0.3.2             
+ [33] survival_3.5-8              memoise_2.0.1               crul_1.4.0                  s2_1.1.6                   
+ [37] hexbin_1.28.4               janitor_2.2.1               emmeans_1.10.0              profvis_0.3.8              
+ [41] parameters_0.24.1           systemfonts_1.0.6           tidytree_0.4.6              ragg_1.3.0                 
+ [45] zoo_1.8-12                  phylobase_0.8.12            pbapply_1.7-2               DEoptimR_1.1-3             
+ [49] spData_2.3.1                GA_3.2.4                    GGally_2.2.1                prettyunits_1.2.0          
+ [53] rematch2_2.1.2              datawizard_1.0.0            promises_1.2.1              scatterplot3d_0.3-44       
+ [57] httr_1.4.7                  rstatix_0.7.2               rncl_0.8.7                  rhdf5filters_1.14.1        
+ [61] rhdf5_2.46.1                rstudioapi_0.16.0           pan_1.9                     units_0.8-5                
+ [65] miniUI_0.1.1.1              generics_0.1.3              metabaR_1.0.0               curl_5.2.1                 
+ [69] S4Vectors_0.40.2            zlibbioc_1.48.2             polyclip_1.10-6             adegenet_2.1.10            
+ [73] GenomeInfoDbData_1.2.11     SparseArray_1.2.4           FactoMineR_2.10             xtable_1.8-4               
+ [77] stringr_1.5.1               ade4_1.7-22                 metacoder_0.3.7             doParallel_1.0.17          
+ [81] evaluate_0.23               S4Arrays_1.2.1              hms_1.1.3                   glmnet_4.1-8               
+ [85] GenomicRanges_1.54.1        colorspace_2.1-0            readxl_1.4.3                snakecase_0.11.1           
+ [89] spdep_1.3-5                 ggtree_3.10.1               later_1.3.2                 lattice_0.22-5             
+ [93] robustbase_0.99-2           XML_3.99-0.16.1             cowplot_1.1.3               matrixStats_1.2.0          
+ [97] class_7.3-22                pillar_1.9.0                nlme_3.1-164                iterators_1.0.14           
+[101] compiler_4.3.3              geodist_0.1.0               stringi_1.8.3               biomformat_1.30.0          
+[105] jomo_2.7-6                  sf_1.0-16                   minqa_1.2.6                 SummarizedExperiment_1.32.0
+[109] devtools_2.4.5              lubridate_1.9.3             missMDA_1.19                plyr_1.8.9                 
+[113] crayon_1.5.2                abind_1.4-5                 gridGraphics_0.5-1          locfit_1.5-9.9             
+[117] sp_2.1-3                    terra_1.7-71                sandwich_3.1-0              codetools_0.2-19           
+[121] multcomp_1.4-25             textshaping_0.3.7           openssl_2.1.1               flextable_0.9.5            
+[125] e1071_1.7-14                paletteer_1.6.0             phyloseq_1.46.0             multtest_2.58.0            
+[129] mime_0.12                   splines_4.3.3               Rcpp_1.0.12                 cellranger_1.1.0           
+[133] interp_1.1-6                leaps_3.1                   knitr_1.45                  utf8_1.2.4                 
+[137] lme4_1.1-35.1               fs_1.6.3                    gdm_1.5.0-9.1               labdsv_2.1-0               
+[141] pkgbuild_1.4.4              ggplotify_0.1.2             ggsignif_0.6.4              estimability_1.5           
+[145] tibble_3.2.1                Matrix_1.6-5                tweenr_2.0.3                pkgconfig_2.0.3            
+[149] tools_4.3.3                 cachem_1.0.8                DBI_1.2.2                   fastmap_1.1.1              
+[153] rmarkdown_2.26              scales_1.3.0                grid_4.3.3                  usethis_2.2.3              
+[157] adegraphics_1.0-21          broom_1.0.5                 officer_0.6.5               coda_0.19-4.1              
+[161] ggstats_0.5.1               insight_1.0.1               carData_3.0-5               rpart_4.1.23               
+[165] farver_2.1.1                mgcv_1.9-1                  latex2exp_0.9.6             wk_0.9.1                   
+[169] yaml_2.3.8                  bayesm_3.1-6                latticeExtra_0.6-30         MatrixGenerics_1.14.0      
+[173] cli_3.6.2                   purrr_1.0.2                 stats4_4.3.3                file2meco_0.7.1            
+[177] lifecycle_1.0.4             RNeXML_2.4.11               askpass_1.2.0               rnaturalearth_1.0.1        
+[181] Biobase_2.62.0              mvtnorm_1.2-4               sessioninfo_1.2.2           backports_1.4.1            
+[185] BiocParallel_1.36.0         timechange_0.3.0            gtable_0.3.5                seqinr_4.2-36              
+[189] parallel_4.3.3              ape_5.7-1                   jsonlite_1.8.8              mitml_0.4-5                
+[193] bitops_1.0-7                multcompView_0.1-10         Rtsne_0.17                  yulab.utils_0.1.8          
+[197] vegan_2.6-4                 proto_1.0.0                 zip_2.3.1                   mice_3.16.0                
+[201] adespatial_0.3-23           lazyeval_0.2.2              shiny_1.8.1                 htmltools_0.5.8            
+[205] glue_1.7.0                  gfonts_0.2.0                factoextra_1.0.7            adephylo_1.1-16            
+[209] XVector_0.42.0              gdtools_0.3.7               RCurl_1.98-1.14             treeio_1.26.0              
+[213] classInt_0.4-10             jpeg_0.1-10                 gridExtra_2.3               boot_1.3-29                
+[217] flashClust_1.01-2           igraph_2.0.3                R6_2.5.1                    tidyr_1.3.1                
+[221] DESeq2_1.42.1               labeling_0.4.3              forcats_1.0.0               ggh4x_0.2.8                
+[225] cluster_2.1.6               pkgload_1.3.4               Rhdf5lib_1.24.2             aplot_0.2.2                
+[229] GenomeInfoDb_1.38.8         compositions_2.0-8          nloptr_2.0.3                DelayedArray_0.28.0        
+[233] tidyselect_1.2.1            tensorA_0.36.2.1            ggforce_0.4.2               xml2_1.3.6                 
+[237] raster_3.6-26               fontBitstreamVera_0.1.1     car_3.1-2                   ggtern_3.5.0               
+[241] munsell_0.5.1               KernSmooth_2.23-22          fontquiver_0.2.1            data.table_1.15.2          
+[245] htmlwidgets_1.6.4           RColorBrewer_1.1-3          rlang_1.1.3                 ggDESeq_0.0.0.9000         
+[249] pairwiseAdonis_0.4.1        uuid_1.2-0                  remotes_2.5.0               ggnewscale_0.4.10          
+[253] fansi_1.0.6                
