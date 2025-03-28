@@ -2405,47 +2405,21 @@ p_relab3
 ## Sites with low ubiquists
 
 ```{r}
-df%>%
-  filter(prev_category=="75<")%>%
-  group_by(variable)%>%
-  summarise(tot_relab_ubi=sum(value))%>%
-  rename(Sample=variable)%>%
-  left_join(meco_16s$sample_table)%>%
-  mutate(low_ubi=ifelse(tot_relab_ubi<10,"low","high"))%>%
-  select(Sample,koppen_clim,low_ubi,var2use,X,Y)%>%
-  reshape2::melt(id.vars=c("Sample","koppen_clim","low_ubi"))%>%
-  ggplot(aes(x=koppen_clim,
-             fill=low_ubi))+
-  geom_bar()
-```
-
-```{r}
 df_sites_low_ubi <-
 df2%>%
-  filter(prev_category=="75<")%>%
-  mutate(low_ubi=ifelse(totrelab<10,"low","high"))%>%
+  filter(prev_category=="75<")%>% #keep only high prev ASV
+  mutate(low_ubi=ifelse(totrelab<10,"low","high"))%>% # tag sites as high or low ubiquists relative abundance
   rename(Sample=variable)%>%
   left_join(meco_16s$sample_table)%>%
   select(c(koppen_clim,Sample,low_ubi,totrelab,Country,var2use))%>%
   reshape2::melt(measure.vars=var2use)
-
-df_sites_low_ubi%>%
-  ggplot(aes(x=koppen_clim,y=value,color=low_ubi))+
-  geom_boxplot(outlier.shape = NA)+
-  geom_point(position=position_jitterdodge(jitter.width = .2))+
-  facet_wrap(~variable,scales = "free")
-```
-
-```{r}
-df_sites_low_ubi%>%
-  select(-c(variable,value))%>%
-  distinct()%>%
-  ggplot(aes(x=koppen_clim,fill=low_ubi))+
-  geom_bar()
 ```
 
 
+
+
 ```{r}
+low_ubi_plot <-
 df_sites_low_ubi%>%
   select(-c(variable,value))%>%
   distinct()%>%
@@ -2457,6 +2431,7 @@ df_sites_low_ubi%>%
   theme(axis.text.x = element_text(angle=45,hjust=1,vjust=1),
         axis.title.x = element_blank())+
   facet_wrap(~koppen_clim,scales = "free")
+low_ubi_plot
 ```
 
 ```{r}
@@ -2468,8 +2443,8 @@ tmp$tax_table$Genus_conf_rdp <- ifelse(tmp$tax_table$Genus_conf_rdp=="","Unident
 #donut plot
 tmp$cal_abund()
 tmp_trans <- trans_abund$new(tmp,taxrank = "Genus_conf_rdp",ntaxa = 10) #merge all samples
-tmp_trans$plot_bar(facet = "low_ubi")+
-  theme(axis.text.x = element_text(angle=45,hjust=1,vjust=1))
+low_ubi_genera_relab <- tmp_trans$plot_bar(facet = "low_ubi",barwidth = 1)+
+  theme(axis.text.x = element_blank())
 ```
 
 ```{r}
@@ -4861,8 +4836,6 @@ ggsave("figures_and_results/figures/fig6/GDM_spline.png",gdm_plot_var,height = 4
 ###Figure 7
 ```{r}
 ggsave("figures_and_results/figures/fig7/boruta.png",enz_boruta,height = 9,width = 9.5)
-ggsave("figures_and_results/figures/fig7/vpenz.png",gg,width = 9,height =5)
-ggsave("figures_and_results/figures/fig7/bxp_enz.png",enz_climate_bxp,height = 4)
 ```
 ###Figure 8
 ```{r}
@@ -4874,7 +4847,9 @@ ggsave("figures_and_results/figures/fig8/classest.png",p_class_enzyme_estimate,h
 ggsave("figures_and_results/figures/fig8/classest2.png",p_class_enzyme_estimate2,height = 4,width = 8)
 ```
 
-#V- Climatic zone summary
+#V- Supplementary
+
+##Table supp1
 ```{r}
 meco_16s$sample_table%>%
   select(Sample,koppen_clim,var2use,xtra_bacg,xtra_BG,xtra_NAG,xtra_AP,xtra_LAP,reads_post,nb_asvs_raref)%>%
@@ -4910,8 +4885,8 @@ meco_16s$sample_table%>%
   flextable::flextable()%>%
   flextable::save_as_docx(path="figures_and_results/tables/climate_zone_smry.docx")
 ```
-#VI- Variable correlation
 
+## variable pair correlation
 ```{r}
 pairs_supp <- GGally::ggpairs(rename(meco_16s$sample_table,Lat=Y,Lon=X),
                 columns=c(3,4,59:61,20,47,31:35,27,11,13,14,17),
@@ -4937,8 +4912,25 @@ pairs_supp <- GGally::ggpairs(rename(meco_16s$sample_table,Lat=Y,Lon=X),
 ggsave("suppl/pairs_supp.png",pairs_supp,height = 7,width = 7)
 ```
 
+##Fig supp 1
+```{r}
+ggsave("suppl/sites_low_ubiquitous.png",low_ubi_plot,height = 4,width = 6.5)
+```
 
-#VII- Save Environment and Session Info
+##Fig supp 2
+```{r}
+ggsave("suppl/low_ubi_genera_relab.png",low_ubi_genera_relab,height = 4,width = 6.5)
+```
+##Fig supp 3
+```{r}
+ggsave("suppl/bxp_enz.png",enz_climate_bxp,height = 4)
+```
+##Fig supp 4
+```{r}
+ggsave("suppl/vpenz.png",gg,width = 9,height =5)
+```
+
+#VI- Save Environment and Session Info
 ```{r}
 save.image("env.RData")
 writeLines(capture.output(sessionInfo()), "suppl/sessionInfo.txt")
