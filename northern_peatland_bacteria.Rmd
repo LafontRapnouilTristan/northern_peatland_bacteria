@@ -2287,16 +2287,16 @@ relab_prev_genus <-
                         alpha=.9,angle=45,size=4,show.legend = FALSE)+ 
   #color scale
   scale_color_manual(values = colorz,name="Genus")+ #points
-  scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="OTUs prevalence")+#background
+  scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="ASVs prevalence")+#background
   guides(fill="none")+ #don't show in legend
   #log relative abundance
-  scale_y_log10(limits=c(.01,100),breaks=c(.01,.1,1,10))+
+  scale_y_log10(limits=c(.01,110),breaks=c(.01,.1,1,10))+
   #name axes and set theme
   ylab("Mean relative abundance (%)")+
   xlab("OTU prevalence (%)")+
   ggpubr::theme_classic2()+
   scale_x_continuous(expand = c(0.01,0),breaks = c(0,5,10,25, 50, 75,100))+
-  theme(text = element_text(face="bold"))
+  theme(text = element_text(face="bold",size=14))
 
 relab_prev_genus
 ```
@@ -2322,7 +2322,7 @@ p_relab <- (df%>%
               df%>%
               ggplot(aes(x=variable,y=value,fill=prev_category))+
               geom_bar(stat="identity",width=1)+
-              scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="OTUs prevalence (%)")+
+              scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="ASVs prevalence (%)")+
               ggpubr::theme_classic2()+
               scale_y_continuous(expand=c(0,0))+
               theme(text=element_text(face="bold"),
@@ -2344,7 +2344,7 @@ df2 <-
 p_relab2 <- (df2%>%
               ggplot(aes(x=totrelab,y=variable,fill=prev_category))+
               geom_bar(stat="identity",width=1)+
-              scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="OTUs prevalence (%)")+
+              scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="ASVs prevalence (%)")+
               ggpubr::theme_classic2()+
               scale_x_continuous(expand=c(0,0),position = "top")+
               theme(text=element_text(face="bold"),
@@ -2377,7 +2377,7 @@ df3 <-
 p_relab3 <- (df3%>%
               ggplot(aes(x=totrelab,y=koppen_clim,fill=prev_category))+
               geom_bar(stat="identity",width=.8)+
-              scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="OTUs prevalence (%)")+
+              scale_fill_manual(values=paletteer::paletteer_d("tvthemes::AirNomads"),name="ASVs prevalence (%)")+
               ggpubr::theme_classic2()+
               scale_x_continuous(expand=c(0,0),position = "top")+
               theme(text=element_text(face="bold"),
@@ -2445,8 +2445,23 @@ df_sites_low_ubi%>%
 df_sites_low_ubi%>%
   select(-c(variable,value))%>%
   distinct()%>%
-  ggplot(aes(x=Country,color=low_ubi))+
-  geom_bar(position = "dodge")
+  ggplot(aes(x=koppen_clim,fill=low_ubi))+
+  geom_bar()
+```
+
+
+```{r}
+df_sites_low_ubi%>%
+  select(-c(variable,value))%>%
+  distinct()%>%
+  ggplot(aes(x=Country))+
+  geom_bar(position = "dodge",show.legend = TRUE,aes(fill=low_ubi))+ 
+  scale_fill_manual(values = c("burlywood","darkgreen"),drop = FALSE)+
+  scale_x_discrete(expand = c(0,0))+
+  scale_y_continuous(expand = c(0,0))+
+  theme(axis.text.x = element_text(angle=45,hjust=1,vjust=1),
+        axis.title.x = element_blank())+
+  facet_wrap(~koppen_clim,scales = "free")
 ```
 
 ```{r}
@@ -2988,7 +3003,7 @@ for( i in c("Phylum_conf_rdp","Class_conf_rdp","Order_conf_rdp","Family_conf_rdp
     colorz <-  c(paletteer::paletteer_d("ggthemes::Classic_10"),"lightgrey","#666666")
     names(colorz) <-rev(levels(p_data$genus_agg))
   }else{
-    colorz <- c(paletteer::paletteer_d("MoMAColors::Klein")[1:10],"lightgrey","#666666") #paletteer_d("ggthemes::Miller_Stone")
+    colorz <- c(paletteer::paletteer_d("MoMAColors::Klein")[c(6,1:5,7:10)],"lightgrey","#666666") #paletteer_d("ggthemes::Miller_Stone")
   }
   names(colorz) <- levels(plot_data1$Taxonomy )
   colorz[which(names(colorz)=="Unidentified")] <- "#666666"
@@ -3506,6 +3521,81 @@ pcoataxfull <- (axis1+plot_spacer()+pcoatax_starplot+axis2+pcoatax_starplot13+ax
 pcoataxfull
 ```
 
+```{r}
+dtmp_4plot <- pordi_asv$data%>%
+  mutate(nb_reads=rowSums(meco_16s$otu_table[rowSums(meco_16s$otu_table)>1,]))%>% #compute number of reads
+  arrange(prev)%>% #order by prevalence
+  mutate(ASV_id=forcats::fct_inorder(ASV_id))%>% #level factor
+  left_join(select(pordi_asv2$data,c(2,3)))%>% #add axis 3
+  group_by(Class)%>% # groupby class
+  mutate(maxprev=max(prev), # prevalence of the most prevalent ASV
+         propreads=sum(nb_reads)/sum(meco_16s$otu_table[rowSums(meco_16s$otu_table)>1,]), # proportion of total reads
+         medx=median(Axis.1), #median of the coordinates
+         medy=median(Axis.2),
+         medy3=median(Axis.3))
+
+pcoa_value4allclass <-
+((dtmp_4plot%>%
+  ungroup()%>%
+  arrange(desc(medx))%>%
+  mutate(Class=ifelse(Class=="","Unidentified",Class))%>%
+  mutate(mean_relab=as.numeric(mean_relab),
+         prev=as.numeric(prev))%>%
+  mutate(Class=forcats::fct_inorder(Class))%>%
+  group_by(Class)%>%
+  arrange(mean_relab,prev)%>%
+  ggplot(aes(x=Class,y=Axis.1))+
+  geom_boxplot(outlier.shape = NA,fill=rep(c("lightgrey","darkgrey"),36))+
+  geom_point(position = position_jitter(width = .1 ),mapping = aes(color=mean_relab,size=prev))+
+  geom_hline(yintercept = 0,lty=2,color="darkorange2")+
+  theme_bw()+
+  scale_size_continuous(name="Prevalence",range = c(1,4),guide = "none")+
+  scale_color_gradientn(colors = paletteer::paletteer_d("MoMAColors::Exter"),name="Mean relative abundance (%)",guide = "none")+
+  theme(text = element_text(face="bold"),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank()))/
+(  dtmp_4plot%>%
+  ungroup()%>%
+  arrange(desc(medx))%>%
+  mutate(Class=ifelse(Class=="","Unidentified",Class))%>%
+  mutate(mean_relab=as.numeric(mean_relab),
+         prev=as.numeric(prev))%>%
+  mutate(Class=forcats::fct_inorder(Class))%>%
+  group_by(Class)%>%
+  arrange(mean_relab,prev)%>%
+  ggplot(aes(x=Class,y=Axis.2))+
+  geom_boxplot(outlier.shape = NA,fill=rep(c("lightgrey","darkgrey"),36))+
+  geom_point(position = position_jitter(width = .1 ),mapping = aes(color=mean_relab,size=prev))+
+  geom_hline(yintercept = 0,lty=2,color="darkorange2")+
+  theme_bw()+
+  scale_size_continuous(name="Prevalence",range = c(1,4),guide = "none")+
+  scale_color_gradientn(colors = paletteer::paletteer_d("MoMAColors::Exter"),name="Mean relative abundance (%)",guide = "none")+
+  theme(text = element_text(face="bold"),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank()))/
+  (dtmp_4plot%>%
+     ungroup()%>%
+     arrange(desc(medx))%>%
+     mutate(Class=ifelse(Class=="","Unidentified",Class))%>%
+     mutate(mean_relab=as.numeric(mean_relab),
+            prev=as.numeric(prev))%>%
+     mutate(Class=forcats::fct_inorder(Class))%>%
+     group_by(Class)%>%
+     arrange(mean_relab,prev)%>%
+     ggplot(aes(x=Class,y=Axis.3))+
+     geom_boxplot(outlier.shape = NA,fill=rep(c("lightgrey","darkgrey"),36))+
+     geom_point(position = position_jitter(width = .1 ),mapping = aes(color=mean_relab,size=prev))+
+     geom_hline(yintercept = 0,lty=2,color="darkorange2")+
+     theme_bw()+
+     scale_size_continuous(name="Prevalence",range = c(1,4))+
+     scale_color_gradientn(colors = paletteer::paletteer_d("MoMAColors::Exter"),name="Mean relative abundance (%)")+
+     theme(text = element_text(face="bold"),
+           axis.text.x = element_text(angle=45,hjust = 1,vjust = 1))))+
+  plot_layout(guides="collect")
+```
+
+
+
 ## Variance Partitioning
 
 ```{r}
@@ -3775,7 +3865,7 @@ gdm_plot_pred <-
   annotate(geom = "label",x=.5,y=1,
            label=paste0("Deviance explained: ",round(gdm_fitted$explained,digits=2),"%\nAvg obs dissimilarity: ",round(gdm_fitted$intercept,digits=2)),
            hjust=0,fontface="bold",vjust=1,
-           fill=fill_alpha("lightgrey", .6),
+           fill=fill_alpha("lightgrey", .8),
            color="black")+
   # ylim(c(.2,1))+
   # xlim(c(.2,1))+
@@ -4482,8 +4572,15 @@ class4tree_enz <- phy_with_tree_enz@tax_table[,c("ASV_id","new_Class_conf_rdp")]
   arrange(tree_class)
 # %>%  mutate(new_Class_conf_rdp=ifelse(new_Class_conf_rdp%in%top_class$class,"Others",new_Class_conf_rdp))
 
-my_colors <- as.vector(paletteer::paletteer_d("rcartocolor::Antique"))
-names(my_colors) <- levels(class4tree_enz$tree_class)
+
+
+my_colors1 <- as.vector(paletteer::paletteer_d("MoMAColors::Klein")[1:8])
+names(my_colors1) <- levels(axis3$data$class2plot)[-1]
+
+my_colors2 <- c(as.vector(paletteer::paletteer_d("MoMAColors::Klein")[9:11]),"chartreuse4","black")
+names(my_colors2) <- levels(class4tree_enz$tree_class)[which(!levels(class4tree_enz$tree_class)%in%names(my_colors1))]
+
+my_colors <- c(my_colors1,my_colors2)
 
 relab4tree_enz <- class4tree_enz%>%
   left_join(meco_4tree_enz$tax_table[,c("ASV_id","mean_relab")])%>%
@@ -4719,6 +4816,31 @@ p_class_enzyme_estimate2
 ```
 
 
+all var cov 
+```{r}
+GGally::ggpairs(meco_16s$sample_table,
+                 columns=base::match(c(var2use,"X","Y","xtra_bacg","xtra_BG","xtra_NAG","xtra_AP","xtra_LAP","dim1","dim2","dim3",paste0("MEM",1:11)),names(meco_16s$sample_table)),
+                 progress = F,
+                 axisLabels = "none",
+                 # LOWER TRIANGLE ELEMENTS: add line with smoothing; make points transparent and smaller
+                 lower = list(continuous = function(...) 
+                   GGally::ggally_smooth(..., colour="darkolivegreen3", alpha = 0.3, size=0.8)), 
+                 # DIAGONAL ELEMENTS: histograms
+                 diag = list(continuous = function(...) 
+                   GGally::ggally_barDiag(..., fill="grey")),
+                 
+                 # UPPER TRIANGLE ELEMENTS: use fct. creating corr heatmap with sign stars
+                 upper = list(continuous = fct_list$cor_fun)) + 
+  theme(strip.background = element_blank(), # remove color
+        strip.text = element_text(size=6,angle=45), # change font and font size
+        axis.line = element_line(colour = "grey"),
+        # remove grid
+        panel.grid.minor = element_blank(), )+  # remove smaller gridlines
+  # panel.grid.major = element_blank()    # remove larger gridlines)
+  theme(plot.title = element_text(face="bold"))
+```
+
+
 #IV- Save plots
 
 ### Figure 1
@@ -4732,10 +4854,10 @@ ggsave("figures_and_results/figures/fig1/mapp.png",mapproj,height = 6,width = 6)
 ```{r}
 ggsave("figures_and_results/figures/fig2/relab_prev_comp.png",p_relab,height = 2.5,width = 5)
 ggsave("figures_and_results/figures/fig2/relab_prev_comp2.png",p_relab2,height = 5,width = 5)
-ggsave("figures_and_results/figures/fig2/relab_prev_cor.png",relab_prev_genus,height = 6,width = 10)
+ggsave("figures_and_results/figures/fig2/relab_prev_cor.png",relab_prev_genus,height = 5,width = 10)
 ggsave("figures_and_results/figures/fig2/upset.png",upset_plot,height = 4,width = 8)
 ```
-###Figure3
+###Figure 3
 ```{r}
 ggsave("figures_and_results/figures/fig3/comp_phylum.png",bar_list$Phylum_conf_rdp,height = 3.5,width = 6.5)
 ggsave("figures_and_results/figures/fig3/comp_genus.png",bar_list$Genus_conf_rdp,height = 3.5,width = 6.5)
@@ -4744,32 +4866,69 @@ ggsave("figures_and_results/figures/fig3/comp.png",pcomp,height = 9,width = 6.5)
 
 ggsave("figures_and_results/figures/fig3/metacodeR_tree.png",taxo_structree,height = 9,width = 9)
 ggsave("figures_and_results/figures/fig3/metacodeR_tree_RGB.png",heat_treergb,height = 9,width = 9)
+
+pcomp2 <- bar_list$Order_conf_rdp[[2]]+coord_flip()+
+  bar_list$Order_conf_rdp[[1]]+coord_flip()+theme(axis.text.x = element_text(angle=45,vjust=1,hjust=1),axis.text.y = element_blank(),axis.ticks.y = element_blank(),axis.title.y = element_blank(),axis.ticks.x = element_line(),axis.title.x = element_text())+
+  plot_spacer()+
+  bar_list$Genus_conf_rdp[[1]]+coord_flip()+theme(axis.text.x = element_text(angle=45,vjust=1,hjust=1),axis.text.y = element_blank(),axis.ticks.y = element_blank(),axis.title.y = element_blank(),axis.ticks.x = element_line(),axis.title.x = element_text())+
+  plot_layout(guides = "collect",widths = c(1,5,.05,5))&
+  theme(text=element_text(face="bold"))
+ggsave("figures_and_results/figures/fig3/comp2.png",pcomp2,height = 7,width = 6.5)
+
 ```
-###Figure4
+###Figure 4
 ```{r}
 ggsave("figures_and_results/figures/fig4/pcoasites.png",pcoasmpfull,height = 7,width = 6.5)
 ggsave("figures_and_results/figures/fig4/pcoasites12.png",pcoa_horn+theme(legend.position = "none"),height = 1.75,width = 2.5)
 ggsave("figures_and_results/figures/fig4/pcoasites13.png",pcoa_horn13+theme(legend.position = "none"),height = 2,width = 2.5)
 ggsave("figures_and_results/figures/fig4/hmap_pcoa.png",hmap_pcoa,height = 8,width = 5)
 ```
-###Figure5
+###Figure 5
 ```{r}
 ggsave("figures_and_results/figures/fig5/pcoatax.png",pcoataxfull,height = 7,width = 6.5)
+
+layout <- "
+ADG
+BEH
+CFI
+"
+pcoa_all <-
+plot_spacer()+
+  pcoa_horn+ guides(color = guide_legend(reverse = T,
+                                         override.aes = list(alpha = 1,
+                                                             fill= climate_palette[c(3,1,2)])))+
+  pcoa_horn13+ guides(color = guide_legend(reverse = T,
+                                         override.aes = list(alpha = 1,
+                                                             fill= climate_palette[c(3,1,2)])))+
+  pcoataxfull[[1]]+
+  pcoataxfull[[3]]+theme(axis.text.y = element_blank(),axis.title.y = element_blank())+
+  pcoataxfull[[5]]+theme(axis.text.y = element_blank(),axis.title.y = element_blank())+
+  plot_spacer()+
+  pcoataxfull[[4]]+
+  pcoataxfull[[6]]+
+  plot_layout(design = layout,guides = "collect")&
+  theme(plot.margin = unit(c(0, 0, 0, 0), "null"),
+        panel.spacing = unit(c(0, 0, 0, 0), "null"),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        legend.background = element_blank())
+ggsave("figures_and_results/figures/fig4/pcoa_all.png",pcoa_all,height = 8,width = 9)
 ```
-###Figure6
+###Figure 6
 ```{r}
 ggsave("figures_and_results/figures/fig6/pvp_bar.png",pvp_bar,height = 6,width = 2)
 ggsave("figures_and_results/figures/fig6/dbRDA.png",dbrda_site_biplot_mems,height = 6,width = 7)
-ggsave("figures_and_results/figures/fig6/GDM_pred.png",gdm_plot_pred,height = 4,width = 8)
-ggsave("figures_and_results/figures/fig6/GDM_spline.png",gdm_plot_var,height = 4,width = 6)
-ggsave("figures_and_results/figures/fig6/GDM_varrange.png",gdm_pred_range,height = 6,width = 3)
+ggsave("figures_and_results/figures/fig6/GDM_pred.png",gdm_plot_pred+theme(axis.title.y = element_blank()),height = 4.5,width = 6.5)
+ggsave("figures_and_results/figures/fig6/GDM_spline.png",gdm_plot_var,height = 4.5,width = 6.5)
+ ggsave("figures_and_results/figures/fig6/GDM_varrange.png",gdm_pred_range,height = 6,width = 3)
 ```
-###Figure7
+###Figure 7
 ```{r}
 ggsave("figures_and_results/figures/fig7/boruta.png",enz_boruta,height = 9,width = 9.5)
 ggsave("figures_and_results/figures/fig7/vpenz.png",gg,width = 9,height =5)
+ggsave("figures_and_results/figures/fig7/bxp_enz.png",enz_climate_bxp,height = 4)
 ```
-###Figure8
+###Figure 8
 ```{r}
 ggsave("figures_and_results/figures/fig8/tree.png",p4,height = 7,width = 7)
 ggsave("figures_and_results/figures/fig8/fraction.png",p_assocenz_fraction,height = 2,width = 3.5)
@@ -4815,12 +4974,38 @@ meco_16s$sample_table%>%
   flextable::flextable()%>%
   flextable::save_as_docx(path="figures_and_results/tables/climate_zone_smry.docx")
 ```
+#VI- Variable correlation
+
+```{r}
+pairs_supp <- GGally::ggpairs(rename(meco_16s$sample_table,Lat=Y,Lon=X),
+                columns=c(3,4,59:61,20,47,31:35,27,11,13,14,17),
+                progress = F,
+                axisLabels = "none",
+                # LOWER TRIANGLE ELEMENTS: add line with smoothing; make points transparent and smaller
+                lower = list(continuous = function(...) 
+                  GGally::ggally_smooth(..., colour="darkolivegreen3", alpha = 0.3, size=0.8)), 
+                # DIAGONAL ELEMENTS: histograms
+                diag = list(continuous = function(...) 
+                  GGally::ggally_barDiag(..., fill="grey")),
+                
+                # UPPER TRIANGLE ELEMENTS: use fct. creating corr heatmap with sign stars
+                upper = list(continuous = fct_list$cor_fun)) + 
+  theme(strip.background = element_blank(), # remove color
+        strip.text = element_text(size=6,angle=45), # change font and font size
+        axis.line = element_line(colour = "grey"),
+        # remove grid
+        panel.grid.minor = element_blank(), )+  # remove smaller gridlines
+  # panel.grid.major = element_blank()    # remove larger gridlines)
+  theme(plot.title = element_text(face="bold"))
+
+ggsave("suppl/pairs_supp.png",pairs_supp,height = 7,width = 7)
+```
 
 
-#VI- Save Environment and Session Info
+#VII- Save Environment and Session Info
 ```{r}
 save.image("env.RData")
-writeLines(capture.output(sessionInfo()), "sessionInfo.txt")
+writeLines(capture.output(sessionInfo()), "suppl/sessionInfo.txt")
 ```
 
 # -----------------------------------
