@@ -2399,12 +2399,7 @@ p_relab3 <- (df3%>%
 p_relab3
 ```
 
-```{r}
-ubi_asv <-p_relab[[2]]$data%>%filter(prev_category=="75<")%>%select(ASV_id)%>%unique
-((meco_16s$otu_table%>%
-  filter(rownames(.)%in%ubi_asv$ASV_id)%>%
-  sum)/sum(meco_16s$otu_table))*100
-```
+
 
 
 ## Sites with low ubiquists
@@ -2478,70 +2473,11 @@ tmp_trans$plot_bar(facet = "low_ubi")+
 ```
 
 ```{r}
-?DESeqDataSetFromMatrix
+ubi_asv <-p_relab[[2]]$data%>%filter(prev_category=="75<")%>%select(ASV_id)%>%unique
+((meco_16s$otu_table%>%
+  filter(rownames(.)%in%ubi_asv$ASV_id)%>%
+  sum)/sum(meco_16s$otu_table))*100
 
-count4deseq <- meco_16s$otu_table[which(rownames(meco_16s$otu_table)%in%rownames(filter(p_data,prev_category=="75<"))),]
-count4deseq <- count4deseq+1
-col4deseq <- tmp$sample_table
-
-deseq_obj <- DESeq2::DESeqDataSetFromMatrix(countData = count4deseq,
-                               colData = col4deseq,
-                               design = ~low_ubi)
-dds <-DESeq2::DESeq(deseq_obj)
-
-res <- DESeq2::results(dds)
-summary(res)
-
-library(DESeq2)
-# devtools::install_github('btmonier/ggDESeq')
-ggDESeq::ggVolcano(dds)
-out_deseq <- as.data.frame(do.call(cbind, res@listData))
-rownames(out_deseq) <- res@rownames
-out_deseq%<>%
-  mutate(is_signif=ifelse(padj<0.05,"yes","no"))%>%
-  mutate(is_enriched=ifelse(log2FoldChange<0,"less in lowubi","more in lowubi"))
-out_deseq_sig <- out_deseq%>%
-  filter(is_signif=="yes")
-
-meco_16s$tax_table%>%
-  filter(ASV_id%in%rownames(out_deseq_sig))
-```
-
-```{r}
-df_volcano <-out_deseq%>%
-  mutate(ASV_id=rownames(.))%>%
-  left_join(meco_16s$tax_table)%>%
-  mutate(Genus_conf_rdp=ifelse(Genus_conf_rdp=="","Unidentified",Genus_conf_rdp))
-
-plot_volcano <- 
-  ggplot()+
-  geom_point(filter(df_volcano,is_signif=="yes"),mapping=aes(x=log2FoldChange, y=-log10(padj),color=Genus_conf_rdp),size=3)+
-  ggrepel::geom_label_repel(filter(df_volcano,is_signif=="yes"),mapping=aes(x=log2FoldChange, y=-log10(padj),label=ASV_id))+
-  geom_point(filter(df_volcano,is_signif!="yes"),mapping=aes(x=log2FoldChange, y=-log10(padj)),alpha=.4,shape=16,size=2)+
-  ylim(0,15)+
-  xlim(-4,4)+
-  theme_bw()+
-  geom_hline(yintercept = -log10(0.05),lty=2)+
-    scale_color_manual(values = paletteer::paletteer_d("fishualize::Zebrasoma_velifer")[c(1,3:5,2)],name="Genus")+
-    theme(text=element_text(face="bold"))+
-    xlab(bquote(bold(log[2]~" Fold Change")))+
-    ylab(bquote(bold(-log[10]~" (p-value)")))
-plot_volcano
-```
-
-```{r}
-((meco_16s$otu_table[which(rownames(meco_16s$otu_table)%in%rownames(out_deseq_sig)),]/7000)*100)%>%
-  as.data.frame()%>%
-    mutate(ASV_id=rownames(.))%>%
-  reshape2::melt()%>%
-  left_join(meco_16s$tax_table)%>%
-  dplyr::rename(Sample=variable)%>%
-  left_join(dplyr::select(tmp$sample_table,Sample,koppen_clim,Country,low_ubi))%>%
-  arrange(koppen_clim)%>%
-  mutate(Sample=forcats::fct_inorder(Sample))%>%
-  ggplot(aes(x=Sample,y=value,fill=Genus_conf_rdp))+
-  geom_bar(stat = "identity")+
-  ggh4x::facet_nested_wrap(~koppen_clim+low_ubi,scales = "free_x",nrow = 3)
 ```
 
 
@@ -2925,7 +2861,7 @@ df_asv_smry%>%
   dplyr::rename(Taxa=value)%>%
   select(-tosort)%>%
   flextable::flextable()%>%
-  flextable::save_as_docx(path="figures_and_results/tables/taxa_smry.docx")
+  flextable::save_as_docx(path="suppl/taxa_smry.docx")
 
 df_asv_smry%>%
   group_by(variable,value)%>%
@@ -2949,7 +2885,7 @@ df_asv_smry%>%
   dplyr::rename(Taxa=value)%>%
   select(-tosort)%>%
   relocate(number_unique_tax_rank,.after=1)%>%
-  write.csv(file="figures_and_results/tables/taxa_smry.csv",row.names =F)
+  write.csv(file="suppl/taxa_smry.csv",row.names =F)
 
 ```
 
